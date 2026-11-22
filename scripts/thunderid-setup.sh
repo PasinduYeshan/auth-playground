@@ -2,12 +2,15 @@
 # Prepares a ThunderID server for Auth Playground:
 #   1. allows the playground's origins in the server-wide CORS list,
 #   2. creates two organizations (OUs) under a parent,
-#   3. creates a public PKCE browser application in the parent, shared with both organizations,
-#   4. creates test users: one in each organization, and one shared into both.
+#   3. creates test users: one in each organization, and one shared into both,
+#   4. creates a public PKCE browser application in the parent, shared with both organizations, with
+#      the device code grant (and a device grant flow that calls the application's sign-in flow),
+#   5. creates a confidential m2m application for client credentials and token exchange.
 #
 # Usage: BASE=https://localhost:8090 ADMIN_PASSWORD=... ./scripts/thunderid-setup.sh
 # Optional: ORIGINS="https://auth-playground.yeshandev.com http://localhost:5173"
 #           CLIENT_ID=auth-playground   REDIRECTS="<origin>/callback ..."
+#           AUTH_FLOW=<sign-in flow ID for the browser application>   CONSOLE_REDIRECT   PACK_DIR
 # Needs curl, jq and openssl. Writes the created IDs to scripts/.thunderid-env (git-ignored).
 set -euo pipefail
 
@@ -18,6 +21,9 @@ ORIGINS="${ORIGINS:-https://auth-playground.yeshandev.com http://localhost:5173}
 CLIENT_ID="${CLIENT_ID:-auth-playground}"
 TEST_PASSWORD="${TEST_PASSWORD:-Playground@123}"
 DEFAULT_OU="01900000-0000-7000-8000-000000000001"
+# Bootstrap flows: the sign-in flow the browser application uses and the default device grant flow.
+AUTH_FLOW="${AUTH_FLOW:-01900000-0000-7000-8000-000000000068}"
+DEFAULT_DEVICE_FLOW="01900000-0000-7000-8000-00000000008a"
 SYSTEM_RS="https://localhost:8090/mcp"
 CONSOLE_REDIRECT="${CONSOLE_REDIRECT:-$BASE/console}"
 ENV_FILE="$(cd "$(dirname "$0")" && pwd)/.thunderid-env"
@@ -112,12 +118,20 @@ USER_C="$(mkuser "$PARENT_OU" "carol-$SUFFIX" Carol)"
 api POST "/users/$USER_C/sharing-policies" "$(jq -nc --arg a "$ORG_A" --arg b "$ORG_B" \
   '{childUnits:{mode:"selected", units:[{ouId:$a, reach:"unit"}, {ouId:$b, reach:"unit"}]}}')" >/dev/null
 
-echo "4. Application $CLIENT_ID"
-APP_ID="$(create /applications "$(jq -nc --arg o "$PARENT_OU" --arg c "$CLIENT_ID" --arg r "$REDIRECTS" --arg l "$POST_LOGOUT" '
-  {name:("Auth Playground (" + $c + ")"), ouId:$o, type:"browser", authFlowId:"01900000-0000-7000-8000-000000000068",
+echo "4. Device grant flow and application $CLIENT_ID"
+# The device code grant needs a DEVICE_GRANT flow on the application, and its CALL node must target the
+# same authentication flow as the application's authFlowId. Copy the default one and point it there.
+DEVICE_FLOW="$(create /flows "$(api GET "/flows/$DEFAULT_DEVICE_FLOW" | jq -c --arg o "$PARENT_OU" --arg a "$AUTH_FLOW" --arg s "$SUFFIX" '
+  {name:("Auth Playground Device Flow " + $s), handle:("auth-playground-device-" + $s), flowType, ouId:$o,
+   nodes:(.nodes | map(if .type == "CALL" then .flow.ref = $a else . end))}')")"
+echo "   device grant flow $DEVICE_FLOW"
+APP_ID="$(create /applications "$(jq -nc --arg o "$PARENT_OU" --arg c "$CLIENT_ID" --arg r "$REDIRECTS" --arg l "$POST_LOGOUT" \
+  --arg a "$AUTH_FLOW" --arg d "$DEVICE_FLOW" '
+  {name:("Auth Playground (" + $c + ")"), ouId:$o, type:"browser", authFlowId:$a, deviceGrantFlowId:$d,
    inboundAuthConfig:[{type:"oauth2", config:{
      clientId:$c, redirectUris:($r | split(" ") | map(select(. != ""))), postLogoutRedirectUris:($l | split(" ") | map(select(. != ""))),
-     grantTypes:["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"],
+     grantTypes:["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:token-exchange",
+                 "urn:ietf:params:oauth:grant-type:device_code"],
      responseTypes:["code"], pkceRequired:true, tokenEndpointAuthMethod:"none", publicClient:true,
      scopes:["openid","profile","email","device_sso"],
      scopeClaims:{profile:["given_name","family_name"], email:["email"]},
@@ -128,6 +142,14 @@ APP_ID="$(create /applications "$(jq -nc --arg o "$PARENT_OU" --arg c "$CLIENT_I
 }
 # Share the application with every organization beneath its OU, so users there can sign in to it.
 api POST "/applications/$APP_ID/sharing-policies" '{"childUnits":{"mode":"all"}}' >/dev/null
+
+echo "5. Confidential application $CLIENT_ID-m2m (client credentials, token exchange)"
+M2M="$(api POST /applications "$(jq -nc --arg o "$PARENT_OU" --arg c "$CLIENT_ID-m2m" '
+  {name:("Auth Playground M2M (" + $c + ")"), ouId:$o, type:"m2m",
+   inboundAuthConfig:[{type:"oauth2", config:{clientId:$c, publicClient:false, tokenEndpointAuthMethod:"client_secret_post",
+     grantTypes:["client_credentials","urn:ietf:params:oauth:grant-type:token-exchange"], scopes:["api:read","api:write"]}}]}')")"
+M2M_ID="$(jq -er .id <<<"$M2M")"
+M2M_SECRET="$(jq -er '.inboundAuthConfig[0].config.clientSecret' <<<"$M2M")"
 
 cat >"$ENV_FILE" <<EOF
 BASE="$BASE"
@@ -140,8 +162,14 @@ USER_A="alice-$SUFFIX"
 USER_B="bob-$SUFFIX"
 USER_C="carol-$SUFFIX"
 TEST_PASSWORD="$TEST_PASSWORD"
+DEVICE_FLOW="$DEVICE_FLOW"
+M2M_APP_ID="$M2M_ID"
+M2M_CLIENT_ID="$CLIENT_ID-m2m"
+M2M_CLIENT_SECRET="$M2M_SECRET"
 EOF
+chmod 600 "$ENV_FILE"
 echo
-echo "Done. Issuer $BASE, client ID $CLIENT_ID (public, PKCE)."
+echo "Done. Issuer $BASE, client ID $CLIENT_ID (public, PKCE, device code grant)."
+echo "Confidential client $CLIENT_ID-m2m (client_secret_post); its secret is in $ENV_FILE."
 echo "Organizations: Northstar Labs $ORG_A, Initech $ORG_B."
 echo "Users (password in $ENV_FILE): alice-$SUFFIX (Northstar), bob-$SUFFIX (Initech), carol-$SUFFIX (Customers, shared into both)."

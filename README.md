@@ -64,7 +64,7 @@ Choose the **ThunderID** preset and enter the server's base URL (for example `ht
 
 2. **Create a browser application**: public client, token endpoint authentication `none`, PKCE required, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch, and the device code grant with a device grant flow for device authorization). For client credentials, create a separate `m2m` application with `client_secret_post`. Redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. For organizations, add `ouId`, `ouName` and `ouHandle` to the access token attributes and share the application with the organizations.
 
-`scripts/thunderid-setup.sh` does steps 1 and 2 against a running server. It also creates two organizations and test users:
+`scripts/thunderid-setup.sh` does steps 1 and 2 against a running server. It also creates two organizations, test users, a device grant flow for the browser application, and a confidential `-m2m` client for client credentials:
 
 ```bash
 BASE=https://localhost:8090 ADMIN_PASSWORD='<admin password>' PACK_DIR=/path/to/thunderid ./scripts/thunderid-setup.sh
