@@ -23,6 +23,7 @@ const ENDPOINT_LABELS: [keyof Endpoints, string][] = [
   ['jwks', 'JWKS URI'],
   ['endSession', 'End session (logout)'],
   ['deviceAuthorization', 'Device authorization'],
+  ['par', 'Pushed authorization (PAR)'],
 ]
 
 function downloadJson(fileName: string, json: string): void {

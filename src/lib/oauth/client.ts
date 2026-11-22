@@ -81,7 +81,8 @@ export interface CodeExchangeInput {
   extraParams?: KeyValue[]
 }
 
-export function exchangeCode(input: CodeExchangeInput): Promise<GrantResult> {
+/** The authorization_code token request without client authentication. */
+export function codeExchangeForm(input: Omit<CodeExchangeInput, 'tokenEndpoint' | 'creds'>): Record<string, string | undefined> {
   const form: Record<string, string | undefined> = {
     grant_type: 'authorization_code',
     code: input.code,
@@ -92,7 +93,11 @@ export function exchangeCode(input: CodeExchangeInput): Promise<GrantResult> {
   // URLSearchParams supports repeated keys; a record does not, so only the first resource is sent
   // on the token request. Multiple resources are sent on the authorization request.
   if (input.resources?.[0]) form.resource = input.resources[0]
-  return tokenRequest('Token: authorization_code', input.tokenEndpoint, input.creds, form)
+  return form
+}
+
+export function exchangeCode(input: CodeExchangeInput): Promise<GrantResult> {
+  return tokenRequest('Token: authorization_code', input.tokenEndpoint, input.creds, codeExchangeForm(input))
 }
 
 export interface RefreshInput {

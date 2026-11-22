@@ -1,11 +1,11 @@
 // Orchestration: ties the protocol core to the app store. Views call these; nothing here renders.
-import { buildAuthorizationRequest, checkCallback, parseCallback, prunePending, savePending, takePending, type BuildOptions, type CallbackCheck, type CallbackParams, type PendingAuthorization } from './oauth/authorize'
+import { buildAuthorizationRequest, checkCallback, parseCallback, prunePending, pushAuthorizationRequest, savePending, takePending, withPushedRequest, type AuthorizationRequest, type BuildOptions, type CallbackCheck, type CallbackParams, type ParResult, type PendingAuthorization, type ReceivedCode } from './oauth/authorize'
 import { exchangeForOrganization, orgEndpoints, orgTokenEndpoint, switchSubjectToken } from './oauth/b2b'
-import { exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
+import { codeExchangeForm, exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
 import { discover, fetchJwks } from './oauth/discovery'
 import type { Jwks } from './oauth/jwt'
 import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
-import { activeProfile, addTokenSet, getState, secretsFor, setState, updateProfile } from './store/appStore'
+import { activeProfile, addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile } from './store/appStore'
 
 export function credentialsFor(profile: Profile): ClientCredentials {
   return { clientId: profile.clientId, method: profile.clientAuthMethod, clientSecret: secretsFor(profile.id).clientSecret }
@@ -36,6 +36,7 @@ export async function runDiscovery(profile: Profile): Promise<{ error?: string; 
       jwks: m.jwks_uri ?? '',
       endSession: m.end_session_endpoint ?? '',
       deviceAuthorization: m.device_authorization_endpoint ?? '',
+      par: m.pushed_authorization_request_endpoint ?? '',
     },
   })
   if (m.jwks_uri) void loadJwks(profile.id, m.jwks_uri)
@@ -77,17 +78,32 @@ export function newTokenSet(partial: Omit<TokenSet, 'id' | 'obtainedAt'>): Token
   return { id: crypto.randomUUID(), obtainedAt: Date.now(), ...partial }
 }
 
+/** Step 2 of a PAR run: pushes the previewed request and returns the transaction to redirect with. */
+export async function pushAuthorization(req: AuthorizationRequest): Promise<{ result: ParResult; pending?: PendingAuthorization }> {
+  const profile = getState().profiles.find((p) => p.id === req.pending.profile.id) ?? req.pending.profile
+  // Organization sign-ins push to the same endpoint: RFC 9126 defines one per server.
+  const result = await pushAuthorizationRequest(profile.endpoints.par, req.params, credentialsFor(profile))
+  if (!result.requestUri) return { result }
+  return { result, pending: withPushedRequest(req.pending, result.requestUri, result.expiresIn) }
+}
+
 export interface CallbackOutcome {
   callback?: CallbackParams
   pending?: PendingAuthorization
   check?: CallbackCheck
+  /** The code, kept until the user redeems or discards it. */
+  received?: ReceivedCode
+  error?: string
+}
+
+export interface RedeemOutcome {
   grant?: GrantResult
   tokenSet?: TokenSet
   error?: string
 }
 
-/** Runs once on the /callback page: checks the response, redeems the code, stores the token set. */
-export async function completeCallback(location: Location): Promise<CallbackOutcome> {
+/** Runs once on the /callback page: checks the response and keeps the code. Redeeming is a separate step. */
+export function receiveCallback(location: Location): CallbackOutcome {
   const callback = parseCallback(location)
   if (!callback) return { error: 'This page expects an authorization response (code or error) in the URL.' }
   // Drop the code from the address bar and history straight away.
@@ -95,7 +111,14 @@ export async function completeCallback(location: Location): Promise<CallbackOutc
   const pending = callback.state ? takePending(callback.state) : undefined
   const check = checkCallback(callback, pending)
   if (callback.error || !check.ok || !callback.code || !pending) return { callback, pending, check }
+  const received: ReceivedCode = { id: pending.state, code: callback.code, receivedAt: Date.now(), pending }
+  addCode(received)
+  return { callback, pending, check, received }
+}
 
+/** Redeems a received code at the token endpoint the request named, and stores the token set. */
+export async function redeemCode(received: ReceivedCode): Promise<RedeemOutcome> {
+  const { pending, code } = received
   // Use the live profile for credentials (secrets live in memory), the snapshot for request details.
   const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
   let grant: GrantResult
@@ -103,29 +126,54 @@ export async function completeCallback(location: Location): Promise<CallbackOutc
     grant = await exchangeCode({
       tokenEndpoint: pending.tokenEndpoint,
       creds: credentialsFor(profile),
-      code: callback.code,
+      code,
       redirectUri: pending.profile.redirectUri,
       codeVerifier: pending.codeVerifier,
       resources: pending.profile.resources,
       extraParams: pending.profile.extraTokenParams,
     })
   } catch (err) {
-    return { callback, pending, check, error: err instanceof Error ? err.message : String(err) }
+    return { error: err instanceof Error ? err.message : String(err) }
   }
-  if (!grant.tokens) return { callback, pending, check, grant }
+  // The code is single use: a failed redemption has most likely spent it too (RFC 6749 §4.1.2).
+  removeCode(received.id)
+  if (!grant.tokens) return { grant }
   const tokenSet = newTokenSet({
     label: pending.label ?? (pending.organization ? `Sign in to ${pending.organization.name}` : 'Authorization code'),
     grant: 'authorization_code',
     profileId: pending.profile.id,
     response: grant.tokens,
     nonce: pending.nonce,
-    code: callback.code,
+    code,
     organization: pending.organization,
     tokenEndpoint: pending.tokenEndpoint,
   })
   addTokenSet(tokenSet)
   setState({ view: 'tokens' })
-  return { callback, pending, check, grant, tokenSet }
+  return { grant, tokenSet }
+}
+
+const shellQuote = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
+
+/** The token request for a received code as curl, to redeem it outside the playground. The client
+ * secret is left as $CLIENT_SECRET so it never reaches the clipboard. */
+export function codeExchangeCurl(received: ReceivedCode): string {
+  const { pending, code } = received
+  const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
+  const form = codeExchangeForm({
+    code,
+    redirectUri: pending.profile.redirectUri,
+    codeVerifier: pending.codeVerifier,
+    resources: pending.profile.resources,
+    extraParams: pending.profile.extraTokenParams,
+  })
+  const parts = ['curl', '-i', '-X', 'POST', '-H', shellQuote('Content-Type: application/x-www-form-urlencoded')]
+  if (profile.clientAuthMethod === 'client_secret_basic') parts.push('-u', `${shellQuote(profile.clientId)}:"$CLIENT_SECRET"`)
+  else form.client_id = profile.clientId
+  for (const [k, v] of Object.entries(form)) if (v) parts.push('--data-urlencode', shellQuote(`${k}=${v}`))
+  if (profile.clientAuthMethod === 'client_secret_post') parts.push('--data-urlencode', '"client_secret=$CLIENT_SECRET"')
+  parts.push(shellQuote(pending.tokenEndpoint))
+  return parts.join(' ')
 }
 
 export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<GrantResult> {

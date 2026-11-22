@@ -1,6 +1,7 @@
 // A small external store (useSyncExternalStore) for app-wide state: profiles, the active profile,
 // session-only secrets, provider metadata, token sets and the HTTP log.
 import { useRef, useSyncExternalStore } from 'react'
+import type { ReceivedCode } from '../oauth/authorize'
 import type { ProviderMetadata } from '../oauth/discovery'
 import { onExchange, type HttpExchange } from '../oauth/http'
 import type { Jwks } from '../oauth/jwt'
@@ -18,6 +19,8 @@ export interface AppState {
   jwks: Record<string, Jwks | undefined>
   tokenSets: TokenSet[]
   selectedTokenSetId?: string
+  /** Authorization codes received but not redeemed yet. */
+  codes: ReceivedCode[]
   exchanges: HttpExchange[]
   view: ViewName
   revealSecrets: boolean
@@ -29,6 +32,17 @@ const LOG_KEY = 'ap:http-log:v1'
 function loadExchanges(): HttpExchange[] {
   try {
     return JSON.parse(sessionStorage.getItem(LOG_KEY) ?? '[]') as HttpExchange[]
+  } catch {
+    return []
+  }
+}
+
+// Unredeemed codes sit next to the tokens in sessionStorage, so the choice to redeem survives the
+// return from the callback page. A code is single use and short-lived, and is removed once redeemed.
+const CODES_KEY = 'ap:codes:v1'
+function loadCodes(): ReceivedCode[] {
+  try {
+    return JSON.parse(sessionStorage.getItem(CODES_KEY) ?? '[]') as ReceivedCode[]
   } catch {
     return []
   }
@@ -55,6 +69,7 @@ function initialState(): AppState {
     jwks: {},
     tokenSets,
     selectedTokenSetId: tokenSets[0]?.id,
+    codes: loadCodes(),
     exchanges: loadExchanges(),
     view: viewFromHash(),
     revealSecrets: false,
@@ -74,6 +89,7 @@ export function setState(update: Partial<AppState> | ((s: AppState) => Partial<A
   if (patch.profiles) saveProfiles(next.profiles)
   if (patch.activeProfileId) saveActiveProfileId(next.activeProfileId)
   if (patch.tokenSets) saveTokenSets(next.tokenSets)
+  if (patch.codes) sessionStorage.setItem(CODES_KEY, JSON.stringify(next.codes))
   if (patch.exchanges) {
     try {
       sessionStorage.setItem(LOG_KEY, JSON.stringify(next.exchanges.slice(0, 60)))
@@ -168,4 +184,12 @@ export function removeTokenSet(id: string): void {
     const tokenSets = s.tokenSets.filter((t) => t.id !== id)
     return { tokenSets, selectedTokenSetId: s.selectedTokenSetId === id ? tokenSets[0]?.id : s.selectedTokenSetId }
   })
+}
+
+export function addCode(code: ReceivedCode): void {
+  setState((s) => ({ codes: [code, ...s.codes.filter((c) => c.id !== code.id)] }))
+}
+
+export function removeCode(id: string): void {
+  setState((s) => ({ codes: s.codes.filter((c) => c.id !== id) }))
 }

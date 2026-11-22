@@ -20,11 +20,11 @@ Run `npm run lint`, `npm test` and `npm run build` before every commit. The `onl
 
 | Path | What lives there |
 |---|---|
-| `src/lib/oauth/` | Protocol core, with no React: `http.ts` (`tracedFetch`, masking), `authorize.ts`, `client.ts` (token endpoint grants, UserInfo, introspection, revocation, logout), `discovery.ts`, `jwt.ts` (decode, WebCrypto verification, ID token checks), `pkce.ts`, `b2b.ts` (organizations), `presets.ts`, `types.ts` |
-| `src/lib/flows.ts` | Joins the protocol core to the store. Views call these functions |
+| `src/lib/oauth/` | Protocol core, with no React: `http.ts` (`tracedFetch`, masking), `authorize.ts` (request, PAR, callback), `client.ts` (token endpoint grants, UserInfo, introspection, revocation, logout), `discovery.ts`, `jwt.ts` (decode, WebCrypto verification, ID token checks), `pkce.ts`, `b2b.ts` (organizations), `presets.ts`, `types.ts` |
+| `src/lib/flows.ts` | Joins the protocol core to the store. Views call these functions. `errors.ts` holds plain-language hints for OAuth error codes |
 | `src/lib/store/` | `appStore.ts` (an external store read with `useAppState`), `profiles.ts` (saved configurations, file import and export), `tokens.ts` |
 | `src/views/` | One file per tab: Authorize, Other grants (`GrantsView`), Tokens, Organizations, Compare, HTTP log; plus `ConfigPanel` and `CallbackView` |
-| `src/components/` | Shared UI (`ui.tsx`), `TokenViewer`, `HttpExchangeView` |
+| `src/components/` | Shared UI (`ui.tsx`), `TokenViewer`, `HttpExchangeView`, `ReceivedCodeCard` (redeem, copy or discard a code) |
 | `src/lib/oauth/__tests__/` | Unit tests |
 | `scripts/thunderid-setup.sh` | Prepares a ThunderID server with organizations, users and clients for every flow |
 | `docs/screenshots/` | README images |
@@ -38,6 +38,7 @@ Run `npm run lint`, `npm test` and `npm run build` before every commit. The `onl
 - **The CSP allows scripts from this origin only.** No CDNs, analytics, external fonts or remote images. Add libraries as npm dependencies so they are bundled.
 - **Stay provider-neutral.** Wording, defaults and the UI must work for any server. Put server-specific behaviour in a preset (`presets.ts`: defaults, notes, B2B templates) and in the README's provider notes, never as hard-coded branches.
 - **Protocol hygiene:** PKCE S256; state, nonce and verifier random per request and single use; check `iss` (RFC 9207) and the ID token claims; remove the code from the address bar at once. Follow the RFC in question and name it in comments and UI text.
+- Each step of a flow runs when the user chooses (push, sign in, redeem), with any automatic chaining behind a setting. Keep it that way for new flows.
 - New grants follow the existing pattern: a function in `lib/oauth/client.ts` on top of `tracedFetch` and `applyClientAuth`, store tokens through `flows.ts` (`storeGrantTokens` or `newTokenSet`) so every token operation works on them, then add UI and a unit test for the request it builds.
 
 ## Code style

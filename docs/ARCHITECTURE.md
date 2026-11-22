@@ -38,7 +38,8 @@ Gaps that this project fills:
 | Shared apps | Sign-in at `/oauth2/authorize` to an app shared with child OUs, whose flow has no OU resolver, ends in `access_denied` ("did not determine an organization unit"). | Shown as an error with its explanation; use an organization sign-in. |
 | Organizations | An organization is an OU. Sign-in to an OU at `/ou/{ouId}/oauth2/authorize`, redeem at `/oauth2/token` or `/ou/{ouId}/oauth2/token`. No org parameter, no org-switch grant. Switching = a new sign-in to the other OU (silent with `prompt=none` when the SSO session allows it), or exchanging a `device_secret` (scope `device_sso`) at `/ou/{ouId}/oauth2/token` with token exchange. `GET /users/me/ous` lists the user's OUs. Claims `ouId`, `ouName`, `ouHandle` when the app lists them. | B2B view built on templates: `{issuer}/ou/{org}/oauth2/authorize` and `/token`. Template-based, so other servers (path or parameter styles) fit too. |
 | Framing | Responses carry `X-Frame-Options: DENY`. | No hidden-iframe silent sign-in: a "silent" switch is a top-level `prompt=none` redirect. |
-| DPoP, PAR, JAR | DPoP supported but the `DPoP` header is not in the allowed CORS headers; PAR has no preflight but works as a simple request; JAR not supported. | Future work; DPoP needs a server change or a proxy. |
+| PAR (RFC 9126) | `/oauth2/par`, advertised in discovery. No OPTIONS route, but a form POST from a public client is a simple request and the response carries the CORS headers. `request_uri` lasts 60 seconds. There is no organization PAR endpoint. | PAR is a step in the Authorize view, with the expiry counted down. |
+| DPoP, JAR | DPoP supported but the `DPoP` header is not in the allowed CORS headers; JAR not supported. | Future work; DPoP needs a server change or a proxy. |
 
 ## 2. What needs a backend
 
@@ -69,16 +70,18 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   pkce.ts           RFC 7636
   http.ts           tracedFetch: records every request and response for the HTTP log
   discovery.ts      OIDC Discovery and RFC 8414, JWKS
-  authorize.ts      request builder, pending-transaction store, callback parser and checks
+  authorize.ts      request builder, PAR (RFC 9126), pending-transaction store, callback parser and checks
   client.ts         token grants, client authentication, UserInfo, introspection, revocation, logout URL
   jwt.ts            decode, Web Crypto signature check, ID token and access token claim checks
   b2b.ts            organization endpoints (path templates or a parameter), org claims, token-exchange switch, claim diff
   presets.ts        provider presets: defaults and notes only, no protocol code
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
-src/lib/store/      profiles (localStorage), token sets (sessionStorage), app store
+src/lib/store/      profiles (localStorage), token sets and unredeemed codes (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls
 src/views/          Configure, Authorize, Callback, Other grants, Tokens, Organizations, Compare, HTTP log
 ```
+
+The authorization code flow runs as separate steps, each started by the user: build the request (regenerate at will), push it to the PAR endpoint when the configuration asks for PAR (the browser then carries only `client_id` and `request_uri`), sign in, then check the response on the callback page. The checked code is kept in `sessionStorage` until the user redeems it, copies the token request as curl (the client secret left as `$CLIENT_SECRET`), or discards it; it is removed once a redemption is attempted, since a code is single use. "Redeem the code automatically" restores the one-step behaviour.
 
 Grants without a redirect (client credentials, device authorization, token exchange) are functions in `lib/oauth/client.ts` built on `tracedFetch` and `applyClientAuth`, shown in the Other grants view; their tokens become ordinary token sets. Future grants (CIBA) follow the same pattern.
 
@@ -158,4 +161,9 @@ End to end against ThunderID `main` (051a92c76), in a browser, with the producti
 | RP-initiated logout, then silent switch | Logout state matched; then `login_required` |
 | Client credentials with a confidential (`m2m`) client, `client_secret_post` | 200, access token for the client |
 | Token exchange: client credentials access token as subject | 200, `issued_token_type` access token |
+| PAR at `/oauth2/par` with the public client, then sign-in with `client_id` and `request_uri` only | 201 with `request_uri` (60 s); the server resolved it and showed its sign-in page |
+| PAR, then sign-in to an organization at `/ou/{id}/oauth2/authorize` | Code issued; redeemed at the organization's token endpoint, `ouName` names the organization |
+| Code kept on the callback page, redeemed later from Authorize | 200, token set stored |
+| Token request copied as curl, run from a shell | 200 with tokens |
+| Automatic redemption, and the plain flow with PAR off | 200 in both |
 | Device authorization at `/oauth2/device-authorize`, user code approved at `/gate/device`, polling | `authorization_pending` while waiting, then 200 with access, ID and refresh tokens; signature verified |

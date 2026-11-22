@@ -13,6 +13,8 @@ export interface Endpoints {
   endSession: string
   /** RFC 8628 device authorization endpoint. */
   deviceAuthorization: string
+  /** RFC 9126 pushed authorization request endpoint. */
+  par: string
 }
 
 export interface KeyValue {
@@ -96,6 +98,10 @@ export interface Profile {
   uiLocales: string
   /** Any other authorization request parameter (claims, display, id_token_hint, vendor parameters). */
   extraAuthParams: KeyValue[]
+  /** Push the authorization request to the PAR endpoint (RFC 9126) and redirect with a request_uri. */
+  usePar: boolean
+  /** Redeem the code as soon as the callback checks pass, instead of waiting for the user. */
+  redeemCodeAutomatically: boolean
   /** Extra form fields for the token request. */
   extraTokenParams: KeyValue[]
   /** Credentials for introspection when it needs a different (confidential) client. */
@@ -114,6 +120,7 @@ export const emptyEndpoints = (): Endpoints => ({
   jwks: '',
   endSession: '',
   deviceAuthorization: '',
+  par: '',
 })
 
 export function defaultRedirectUri(): string {
@@ -142,6 +149,8 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
     acrValues: '',
     uiLocales: '',
     extraAuthParams: [],
+    usePar: false,
+    redeemCodeAutomatically: false,
     extraTokenParams: [],
     introspectionClientId: '',
     introspectionAuthMethod: 'client_secret_basic',

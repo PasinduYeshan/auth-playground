@@ -1,26 +1,15 @@
 import { ArrowRight, CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { HttpExchangeView } from '../components/HttpExchangeView'
+import { ReceivedCodeCard } from '../components/ReceivedCodeCard'
 import { Alert, JsonView } from '../components/ui'
-import { completeCallback, type CallbackOutcome } from '../lib/flows'
+import { ERROR_HINTS } from '../lib/errors'
+import { receiveCallback, redeemCode, type CallbackOutcome, type RedeemOutcome } from '../lib/flows'
 import { maskValue } from '../lib/oauth/http'
+import { getState } from '../lib/store/appStore'
 
 // The callback must run exactly once: the state is single use, and React StrictMode runs effects twice.
-let pendingRun: Promise<CallbackOutcome> | undefined
-
-const ERROR_HINTS: Record<string, string> = {
-  access_denied: 'The user or the server refused the request.',
-  unauthorized_client: 'The client may not use this flow, or it is not available in the requested organization.',
-  invalid_request: 'A parameter is missing or malformed. Check the redirect URI, PKCE method and scope.',
-  invalid_scope: 'A requested scope is unknown or not allowed for this client.',
-  login_required: 'prompt=none was sent but there is no session to reuse. Sign in interactively.',
-  interaction_required: 'prompt=none was sent but the server needs the user.',
-  consent_required: 'prompt=none was sent but consent is needed.',
-  invalid_target: 'A resource indicator is unknown or not allowed.',
-  invalid_grant: 'The code is invalid, expired, already used, or the PKCE verifier or redirect URI does not match.',
-  invalid_client: 'Client authentication failed: check the client ID, method and secret.',
-  network_error: 'The browser blocked the token request. Most often the server does not allow this origin (CORS).',
-}
+let received: CallbackOutcome | undefined
+let autoRedeem: Promise<RedeemOutcome> | undefined
 
 function Step({ ok, title, children }: { ok: boolean | undefined; title: string; children?: React.ReactNode }) {
   return (
@@ -37,18 +26,20 @@ function Step({ ok, title, children }: { ok: boolean | undefined; title: string;
 }
 
 export function CallbackView({ home }: { home: string }) {
-  const [outcome, setOutcome] = useState<CallbackOutcome>()
+  const [outcome] = useState<CallbackOutcome>(() => (received ??= receiveCallback(window.location)))
+  const [redeemed, setRedeemed] = useState<RedeemOutcome>()
 
+  // Redeeming is a separate step unless the configuration asks for it straight away.
+  const auto = !!outcome.received && (getState().profiles.find((p) => p.id === outcome.pending?.profile.id) ?? outcome.pending?.profile)?.redeemCodeAutomatically
   useEffect(() => {
-    pendingRun ??= completeCallback(window.location)
-    void pendingRun.then(setOutcome)
-  }, [])
-
-  if (!outcome) return <Step ok={undefined} title="Processing the authorization response…" />
+    if (!auto || !outcome.received) return
+    autoRedeem ??= redeemCode(outcome.received)
+    void autoRedeem.then(setRedeemed)
+  }, [auto, outcome.received])
 
   const cb = outcome.callback
   const shown = cb ? Object.fromEntries(Object.entries(cb.raw).map(([k, v]) => [k, k === 'code' ? maskValue(v) : v])) : undefined
-  const err = cb?.error ?? outcome.grant?.error?.error
+  const done = redeemed?.tokenSet
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <h1 className="text-xl font-semibold">Authorization response</h1>
@@ -71,17 +62,24 @@ export function CallbackView({ home }: { home: string }) {
           {outcome.check.ok && !cb?.iss && <p className="text-xs text-zinc-500">The server sent no iss parameter (RFC 9207).</p>}
         </Step>
       )}
-      {outcome.grant && (
-        <Step ok={!!outcome.grant.tokens} title={outcome.grant.tokens ? 'Redeemed the code for tokens' : `Token request failed: ${outcome.grant.error?.error}`}>
-          {outcome.grant.error?.error_description && <p className="text-sm">{outcome.grant.error.error_description}</p>}
-          {err && ERROR_HINTS[err] && !outcome.grant.tokens && <p className="text-sm text-zinc-500">{ERROR_HINTS[err]}</p>}
-          <HttpExchangeView exchange={outcome.grant.exchange} defaultOpen={!outcome.grant.tokens} />
+      {outcome.received && (
+        <Step
+          ok={redeemed ? !!redeemed.tokenSet : auto ? undefined : true}
+          title={auto ? (redeemed ? 'Redeemed the code automatically' : 'Redeeming the code (automatic redemption is on)…') : 'Redeem the code, or keep it'}
+        >
+          {!auto && !redeemed && (
+            <p className="text-sm text-zinc-500">
+              Nothing has been sent to the token endpoint yet. Redeem the code here, copy the token request to send it yourself, or go back: the code waits under Authorize until you redeem or discard it.
+            </p>
+          )}
+          {(!auto || redeemed) && <ReceivedCodeCard received={outcome.received} outcome={auto ? redeemed : undefined} onRedeemed={setRedeemed} tokensHref={`${home}#tokens`} />}
         </Step>
       )}
-      {outcome.error && cb && <Alert tone="red">{outcome.error}</Alert>}
-      <a className="btn-primary" href={outcome.tokenSet ? `${home}#tokens` : home}>
-        {outcome.tokenSet ? 'Inspect the tokens' : 'Back to the playground'} <ArrowRight size={15} />
-      </a>
+      {!done && (
+        <a className="btn-ghost" href={home}>
+          Back to the playground <ArrowRight size={15} />
+        </a>
+      )}
     </div>
   )
 }

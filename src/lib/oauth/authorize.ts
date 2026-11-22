@@ -1,5 +1,7 @@
 // Authorization request (RFC 6749 §4.1, RFC 7636, RFC 8707, OIDC Core) and the callback.
+import { applyClientAuth, type ClientCredentials } from './client'
 import { randomString } from './encoding'
+import { tracedFetch, type HttpExchange } from './http'
 import { computeCodeChallenge, generateCodeVerifier } from './pkce'
 import type { Organization, Profile } from './types'
 
@@ -18,7 +20,10 @@ export interface PendingAuthorization {
   tokenEndpoint: string
   label?: string
   createdAt: number
+  /** Where the browser goes: the full request, or client_id and request_uri after a push. */
   authorizationUrl: string
+  /** Set once the request was pushed (RFC 9126). */
+  par?: { requestUri: string; pushedAt: number; expiresAt: number }
 }
 
 export interface AuthorizationRequest {
@@ -94,6 +99,66 @@ export async function buildAuthorizationRequest(profile: Profile, opts: BuildOpt
   return { url: url.toString(), params, pending }
 }
 
+// Pushed authorization requests (RFC 9126): the parameters go to the server in a back-channel POST,
+// and the front channel carries only client_id and the request_uri the server returns.
+
+/** The PAR form: every authorization parameter plus client authentication, as on the token endpoint. */
+export function parForm(params: [string, string][], creds: ClientCredentials): { form: [string, string][]; headers: Record<string, string> } {
+  const auth: Record<string, string | undefined> = {}
+  const headers: Record<string, string> = {}
+  applyClientAuth(creds, auth, headers)
+  const form = params.filter(([k]) => k !== 'request_uri')
+  for (const [k, v] of Object.entries(auth)) {
+    if (v === undefined || form.some(([fk]) => fk === k)) continue
+    form.push([k, v])
+  }
+  return { form, headers }
+}
+
+export interface ParResult {
+  exchange: HttpExchange
+  requestUri?: string
+  expiresIn?: number
+  error?: { error: string; error_description?: string }
+}
+
+export async function pushAuthorizationRequest(endpoint: string, params: [string, string][], creds: ClientCredentials): Promise<ParResult> {
+  if (!endpoint) throw new Error('Set the pushed authorization request endpoint first (run discovery).')
+  const { form, headers } = parForm(params, creds)
+  const exchange = await tracedFetch({ label: 'Pushed authorization request', url: endpoint, form, headers })
+  const body = exchange.response?.json as Record<string, unknown> | undefined
+  const status = exchange.response?.status ?? 0
+  if (status >= 200 && status < 300 && typeof body?.request_uri === 'string')
+    return { exchange, requestUri: body.request_uri, expiresIn: typeof body.expires_in === 'number' ? body.expires_in : undefined }
+  if (body && typeof body.error === 'string')
+    return { exchange, error: { error: body.error, error_description: body.error_description as string | undefined } }
+  return {
+    exchange,
+    error: {
+      error: exchange.networkError ? 'network_error' : 'unexpected_response',
+      error_description: exchange.networkError ?? `HTTP ${status}`,
+    },
+  }
+}
+
+/** RFC 9126 §4: the authorization request after a push carries client_id and request_uri only. */
+export function parAuthorizationUrl(authorizationEndpoint: string, clientId: string, requestUri: string): string {
+  const url = new URL(authorizationEndpoint)
+  url.searchParams.set('client_id', clientId)
+  url.searchParams.set('request_uri', requestUri)
+  return url.toString()
+}
+
+/** The pending transaction after a successful push: same state and verifier, shorter URL. */
+export function withPushedRequest(pending: PendingAuthorization, requestUri: string, expiresIn: number | undefined, now = Date.now()): PendingAuthorization {
+  return {
+    ...pending,
+    authorizationUrl: parAuthorizationUrl(pending.authorizationEndpoint, pending.profile.clientId, requestUri),
+    // RFC 9126 requires expires_in; assume a minute if a server leaves it out.
+    par: { requestUri, pushedAt: now, expiresAt: now + (expiresIn ?? 60) * 1000 },
+  }
+}
+
 const PENDING_PREFIX = 'ap:pending:'
 const PENDING_TTL_MS = 30 * 60 * 1000
 
@@ -156,6 +221,14 @@ export function parseCallback(location: { search: string; hash: string }): Callb
     errorDescription: params.get('error_description') ?? undefined,
     errorUri: params.get('error_uri') ?? undefined,
   }
+}
+
+/** A code that passed the callback checks and waits for the user to redeem it (or not). */
+export interface ReceivedCode {
+  id: string
+  code: string
+  receivedAt: number
+  pending: PendingAuthorization
 }
 
 export interface CallbackCheck {

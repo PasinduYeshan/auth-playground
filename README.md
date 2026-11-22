@@ -8,8 +8,8 @@ Live: <https://auth-playground.yeshandev.com>
 
 ## What it does
 
-- **Authorization Code with PKCE**: discovery, configurable endpoints, scopes (with chips from `scopes_supported`), RFC 8707 resources, prompt, max_age, login_hint, acr_values, ui_locales and any extra parameter. A live preview explains every parameter.
-- **Callback checks**: single-use state, `iss` (RFC 9207), automatic code exchange, errors explained in plain words. The code is removed from the address bar at once.
+- **Authorization Code with PKCE, one step at a time**: discovery, configurable endpoints, scopes (with chips from `scopes_supported`), RFC 8707 resources, prompt, max_age, login_hint, acr_values, ui_locales and any extra parameter. A live preview explains every parameter. Optionally push the request first (PAR, RFC 9126) and see the `request_uri` and its expiry before signing in.
+- **Callback checks**: single-use state, `iss` (RFC 9207), errors explained in plain words. The code is removed from the address bar at once. Then you decide: redeem the code, copy the token request as curl, or keep it for later under Authorize. Automatic redemption is a setting.
 - **Tokens**: decoded access, ID and refresh tokens; JWKS signature check (RS, PS, ES, EdDSA); ID token checks (iss, aud, azp, exp, nbf, iat, nonce, at_hash, c_hash); claim descriptions and times.
 - **Operations**: refresh, UserInfo (GET or POST), introspection, revocation (confirmed by introspection), RP-initiated logout.
 - **Other grants**: client credentials (with this configuration's client or another, confidential one), device authorization (RFC 8628: user code, verification link, polling with `slow_down` and expiry), and token exchange (RFC 8693: subject and actor tokens picked from any token set or pasted, requested token type, audience, resource, scope). Any of them can target an organization's token endpoint, and the tokens they return get every operation.
@@ -81,6 +81,7 @@ BASE=https://localhost:8090 ADMIN_PASSWORD='<admin password>' PACK_DIR=/path/to/
 |---|---|
 | Token endpoint and CORS | `/oauth2/token` answers no preflight, so `client_secret_basic` (an `Authorization` header) cannot be used from a browser. Use `none` or `client_secret_post`. |
 | PKCE | `S256` only. |
+| PAR | `/oauth2/par` works from the browser as a simple request. A `request_uri` lasts 60 seconds, so sign in soon after pushing. Organization sign-ins push to the same endpoint. |
 | Response mode | `query` only. |
 | Organizations | Selected by path: `/ou/{ouId}/oauth2/authorize` and `/ou/{ouId}/oauth2/token`. |
 | Organization token endpoint | Accepts authorization code, client credentials and token exchange (device secret only). Refresh goes to `/oauth2/token`; the refresh token keeps the organization. |
@@ -104,4 +105,4 @@ The app is static. `.github/workflows/deploy.yml` builds and publishes it to Git
 
 ## Roadmap
 
-CIBA, PAR, DPoP, `private_key_jwt`, more provider presets, shareable configuration links, and an optional self-hosted relay for servers without CORS.
+CIBA, signed request objects (JAR), DPoP, `private_key_jwt`, more provider presets, shareable configuration links, and an optional self-hosted relay for servers without CORS.

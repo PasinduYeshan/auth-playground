@@ -44,16 +44,16 @@ export interface TracedRequest {
   method?: 'GET' | 'POST'
   url: string
   headers?: Record<string, string>
-  /** Form fields, sent as application/x-www-form-urlencoded. */
-  form?: Record<string, string | undefined>
+  /** Form fields, sent as application/x-www-form-urlencoded. Use pairs when a name repeats (resource). */
+  form?: Record<string, string | undefined> | [string, string][]
 }
 
 export const NETWORK_ERROR_HINT =
   'The browser blocked the request or could not reach the server. The usual causes are: the endpoint does not send CORS headers for this origin (add this site to the server\'s allowed origins), an untrusted TLS certificate (open the server URL in a tab once and accept it), or the server is down.'
 
-export function encodeForm(form: Record<string, string | undefined>): string {
+export function encodeForm(form: Record<string, string | undefined> | [string, string][]): string {
   const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(form)) {
+  for (const [key, value] of Array.isArray(form) ? form : Object.entries(form)) {
     if (value !== undefined && value !== '') params.append(key, value)
   }
   return params.toString()
