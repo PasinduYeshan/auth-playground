@@ -52,10 +52,12 @@ export function TokenSetStatus({ set }: { set: TokenSet }) {
 
 function TokenSetList({ sets, selectedId }: { sets: TokenSet[]; selectedId?: string }) {
   const byId = new Map(sets.map((s) => [s.id, s]))
+  const profiles = useAppState((s) => s.profiles)
+  const claimsFor = (set: TokenSet) => profiles.find((p) => p.id === set.profileId)?.b2b.orgClaims
   return (
     <div className="space-y-1.5">
       {sets.map((set) => {
-        const org = organizationOf(set)
+        const org = organizationOf(set, claimsFor(set))
         return (
           <button
             type="button"
@@ -75,7 +77,6 @@ function TokenSetList({ sets, selectedId }: { sets: TokenSet[]; selectedId?: str
                 </Badge>
               )}
               {set.response.refresh_token && <Badge>refresh</Badge>}
-              {typeof set.response.device_secret === 'string' && <Badge tone="blue">device secret</Badge>}
             </div>
             <div className="mt-1 text-[11px] text-zinc-500">
               {new Date(set.obtainedAt).toLocaleTimeString()} · {set.grant.replace(/_/g, ' ')}
@@ -329,7 +330,7 @@ function TokenSetDetail({ set }: { set: TokenSet }) {
   const jwks = useAppState((s) => s.jwks[profile.id])
   const available = (['access_token', 'id_token', 'refresh_token'] as TokenKey[]).filter((k) => set.response[k])
   const [tab, setTab] = useState<TokenKey | 'response' | 'operations'>(available[0] ?? 'response')
-  const org = organizationOf(set)
+  const org = organizationOf(set, profile.b2b.orgClaims)
 
   useEffect(() => {
     void ensureJwks(profile)

@@ -67,9 +67,6 @@ function Header({ dark, toggle }: { dark: boolean; toggle: () => void }) {
         <Logo />
         <span className="hidden text-xs text-zinc-500 md:block">OAuth 2.0 and OpenID Connect, in your browser</span>
         <span className="flex-1" />
-        <a className="btn-ghost hidden text-xs sm:inline-flex" href="https://thunderid.dev" target="_blank" rel="noreferrer">
-          Built for ThunderID
-        </a>
         <button type="button" className="btn-ghost px-2" onClick={toggle} title="Toggle theme">
           {dark ? <Sun size={16} /> : <Moon size={16} />}
         </button>

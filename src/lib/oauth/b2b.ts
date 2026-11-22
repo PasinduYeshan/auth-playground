@@ -1,11 +1,12 @@
-// Organization (B2B) support. Servers differ in how a request names an organization, so endpoints come
-// from templates. ThunderID selects an organization unit by path: /ou/{ouId}/oauth2/authorize and
-// /ou/{ouId}/oauth2/token. Switching is a new sign-in to the other organization (silent with
-// prompt=none when the SSO session allows it), or a device-secret token exchange at its token endpoint.
+// Organization (B2B) support. Servers differ in how a request names an organization: some put it in
+// the endpoint path ({issuer}/o/{org}/authorize), others take a request parameter (organization=...).
+// Both are configurable, as are the claims that name the organization in a token. Switching is a new
+// sign-in to the other organization (silent with prompt=none when the session allows it), or a token
+// exchange (RFC 8693) at the organization's token endpoint.
 import { customGrant, type ClientCredentials, type GrantResult } from './client'
 import { tracedFetch, type HttpExchange } from './http'
 import { decodeToken } from './jwt'
-import type { B2BConfig, Organization, Profile, TokenSet } from './types'
+import { genericB2B, type B2BConfig, type OrgClaims, type Organization, type Profile, type TokenSet } from './types'
 
 export function resolveTemplate(template: string, issuer: string, org: string): string {
   return template.replace(/\{issuer\}/g, issuer.replace(/\/+$/, '')).replace(/\{org\}/g, encodeURIComponent(org))
@@ -38,7 +39,7 @@ export interface OrgListResult {
   error?: string
 }
 
-/** Reads the user's organizations. Understands ThunderID's {organizationUnits, current} and plain arrays. */
+/** Reads the user's organizations: a plain array, or an object with organizationUnits, organizations or items. */
 export async function fetchOrganizations(profile: Profile, accessToken: string): Promise<OrgListResult> {
   const url = resolveTemplate(profile.b2b.listTemplate, profile.issuer, '')
   const exchange = await tracedFetch({ label: 'List organizations', url, headers: { Authorization: `Bearer ${accessToken}` } })
@@ -54,36 +55,60 @@ export async function fetchOrganizations(profile: Profile, accessToken: string):
   return { exchange, organizations, current: Array.isArray(body) ? undefined : (body.current as string | undefined) }
 }
 
-export const DEVICE_SECRET_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:jwt'
 export const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange'
 
-/** ThunderID device-secret switch: exchange the device secret at the organization's token endpoint. */
-export function exchangeDeviceSecret(
+/** The subject token a switch would use, taken from the configured token response field. */
+export function switchSubjectToken(profile: Profile, set: TokenSet): string | undefined {
+  const value = set.response[profile.b2b.switchExchange.subjectTokenField]
+  return typeof value === 'string' && value ? value : undefined
+}
+
+/** Switches organization by token exchange at the organization's token endpoint. */
+export function exchangeForOrganization(
   profile: Profile,
   org: Organization,
   creds: ClientCredentials,
-  deviceSecret: string,
+  subjectToken: string,
   scope: string,
 ): Promise<GrantResult> {
-  const endpoint = resolveTemplate(profile.b2b.tokenTemplate, profile.issuer, org.id)
-  return customGrant(`Token: device secret → ${org.name}`, endpoint, creds, {
+  const endpoint = orgTokenEndpoint(profile, org)
+  const form: Record<string, string | undefined> = {
     grant_type: TOKEN_EXCHANGE_GRANT,
-    subject_token: deviceSecret,
-    subject_token_type: DEVICE_SECRET_TOKEN_TYPE,
-    scope,
-  })
+    subject_token: subjectToken,
+    subject_token_type: profile.b2b.switchExchange.subjectTokenType,
+    scope: scope || undefined,
+  }
+  if (profile.b2b.style === 'param') form[profile.b2b.paramName] = org.id
+  return customGrant(`Token exchange → ${org.name}`, endpoint, creds, form)
 }
 
-/** The organization a token set was issued for, from its claims (ThunderID: ouId, ouName, ouHandle). */
-export function organizationOf(set: TokenSet): Organization | undefined {
+/** The organization's token endpoint (the default one for parameter-style servers). */
+export function orgTokenEndpoint(profile: Profile, org: Organization): string {
+  if (profile.b2b.style === 'param') return profile.endpoints.token
+  return resolveTemplate(profile.b2b.tokenTemplate, profile.issuer, org.id)
+}
+
+const COMMON_ORG_CLAIMS: OrgClaims[] = [
+  { id: 'org_id', name: 'org_name', handle: '' },
+  { id: 'organization_id', name: 'organization_name', handle: '' },
+  { id: 'ouId', name: 'ouName', handle: 'ouHandle' },
+]
+
+/** The organization a token set was issued for: the configured claims first, then common names. */
+export function organizationOf(set: TokenSet, claims?: OrgClaims): Organization | undefined {
+  const candidates = claims ? [claims, ...COMMON_ORG_CLAIMS] : COMMON_ORG_CLAIMS
   for (const raw of [set.response.access_token, set.response.id_token]) {
     if (!raw) continue
     const t = decodeToken(raw)
     if (t.kind !== 'jwt') continue
     const p = t.payload
-    const id = p.ouId ?? p.org_id ?? p.organization_id
-    if (typeof id === 'string')
-      return { id, name: String(p.ouName ?? p.org_name ?? p.organization_name ?? id), handle: typeof p.ouHandle === 'string' ? p.ouHandle : undefined }
+    for (const c of candidates) {
+      const id = c.id ? p[c.id] : undefined
+      if (typeof id !== 'string' || !id) continue
+      const name = c.name && typeof p[c.name] === 'string' ? String(p[c.name]) : id
+      const handle = c.handle && typeof p[c.handle] === 'string' ? String(p[c.handle]) : undefined
+      return { id, name, handle }
+    }
   }
   return set.organization
 }
@@ -116,16 +141,25 @@ export function diffClaims(left: Record<string, unknown>, right: Record<string, 
   })
 }
 
-export function sanitizeB2B(input: unknown, base: B2BConfig): B2BConfig {
+export function sanitizeB2B(input: unknown, base: B2BConfig = genericB2B()): B2BConfig {
   const src = (input && typeof input === 'object' ? input : {}) as Partial<B2BConfig>
   const str = (v: unknown, d: string) => (typeof v === 'string' ? v : d)
+  const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
+  const claims = (src.orgClaims ?? {}) as Partial<OrgClaims>
+  const sw = (src.switchExchange ?? {}) as Partial<B2BConfig['switchExchange']>
   return {
-    style: src.style === 'param' ? 'param' : 'path',
+    style: src.style === 'path' || src.style === 'param' ? src.style : base.style,
     authorizeTemplate: str(src.authorizeTemplate, base.authorizeTemplate),
     tokenTemplate: str(src.tokenTemplate, base.tokenTemplate),
     paramName: str(src.paramName, base.paramName),
     listTemplate: str(src.listTemplate, base.listTemplate),
-    redeemAtOrgTokenEndpoint: typeof src.redeemAtOrgTokenEndpoint === 'boolean' ? src.redeemAtOrgTokenEndpoint : base.redeemAtOrgTokenEndpoint,
+    redeemAtOrgTokenEndpoint: bool(src.redeemAtOrgTokenEndpoint, base.redeemAtOrgTokenEndpoint),
+    refreshAtOrgTokenEndpoint: bool(src.refreshAtOrgTokenEndpoint, base.refreshAtOrgTokenEndpoint),
+    orgClaims: { id: str(claims.id, base.orgClaims.id), name: str(claims.name, base.orgClaims.name), handle: str(claims.handle, base.orgClaims.handle) },
+    switchExchange: {
+      subjectTokenField: str(sw.subjectTokenField, base.switchExchange.subjectTokenField),
+      subjectTokenType: str(sw.subjectTokenType, base.switchExchange.subjectTokenType),
+    },
     organizations: Array.isArray(src.organizations)
       ? src.organizations
           .filter((o) => o && typeof o.id === 'string')

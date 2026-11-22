@@ -1,6 +1,6 @@
 # Auth Playground: research, architecture and plan
 
-Auth Playground is a browser-only OAuth 2.0 and OpenID Connect test bench, built first for ThunderID and usable with any standards-based server. It is hosted as static files (GitHub Pages, `auth.playground.yeshandev.com`).
+Auth Playground is a browser-only OAuth 2.0 and OpenID Connect test bench for any standards-based server. Provider-specific behaviour lives in presets (`src/lib/oauth/presets.ts`) that only fill defaults; ThunderID is the first preset and the server the playground is verified against. It is hosted as static files (GitHub Pages, `auth.playground.yeshandev.com`).
 
 ## 1. Research
 
@@ -72,7 +72,8 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   authorize.ts      request builder, pending-transaction store, callback parser and checks
   client.ts         token grants, client authentication, UserInfo, introspection, revocation, logout URL
   jwt.ts            decode, Web Crypto signature check, ID token and access token claim checks
-  b2b.ts            organization endpoint templates, org sign-in, device-secret switch, claim diff
+  b2b.ts            organization endpoints (path templates or a parameter), org claims, token-exchange switch, claim diff
+  presets.ts        provider presets: defaults and notes only, no protocol code
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
 src/lib/store/      profiles (localStorage), token sets (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls
@@ -109,7 +110,7 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
 3. Authorize: live request preview, parameter table, start.
 4. Callback: state and `iss` checks, automatic code exchange, errors explained.
 5. Tokens: token sets, decoded JWTs, signature and claim checks, refresh, UserInfo, introspection, revocation, logout.
-6. Organizations: org list (manual or `GET /users/me/ous`), sign-in to an org (interactive or `prompt=none`), device-secret switch, org-scoped code redemption, compare claims between sets.
+6. Organizations: org list (manual or a configurable list endpoint), sign-in to an org (interactive or `prompt=none`), token-exchange switch with a configurable subject token, org-scoped code redemption, compare claims between sets.
 7. HTTP log with masking and "copy as curl".
 8. End-to-end test against a local ThunderID with two OUs and a shared public app.
 9. GitHub Pages workflow.

@@ -1,6 +1,6 @@
 // Orchestration: ties the protocol core to the app store. Views call these; nothing here renders.
 import { buildAuthorizationRequest, checkCallback, parseCallback, prunePending, savePending, takePending, type BuildOptions, type CallbackCheck, type CallbackParams, type PendingAuthorization } from './oauth/authorize'
-import { exchangeDeviceSecret, orgEndpoints } from './oauth/b2b'
+import { exchangeForOrganization, orgEndpoints, orgTokenEndpoint, switchSubjectToken } from './oauth/b2b'
 import { exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
 import { discover, fetchJwks } from './oauth/discovery'
 import type { Jwks } from './oauth/jwt'
@@ -130,11 +130,11 @@ export async function completeCallback(location: Location): Promise<CallbackOutc
 export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<GrantResult> {
   const profile = getState().profiles.find((p) => p.id === set.profileId) ?? activeProfile()
   if (!set.response.refresh_token) throw new Error('This token set has no refresh token.')
-  // Refresh at the default token endpoint: ThunderID's organization token endpoint accepts only the
-  // authorization code, client credentials and token exchange grants. The refresh token itself records
-  // the organization, so the new tokens stay in it.
+  // By default refresh at the default token endpoint: some servers' organization token endpoints
+  // accept no refresh grant, and the refresh token itself records the organization.
+  const tokenEndpoint = profile.b2b.refreshAtOrgTokenEndpoint && set.tokenEndpoint ? set.tokenEndpoint : profile.endpoints.token
   const grant = await refresh({
-    tokenEndpoint: profile.endpoints.token,
+    tokenEndpoint,
     creds: credentialsFor(profile),
     refreshToken: set.response.refresh_token,
     scope: scope || undefined,
@@ -150,7 +150,7 @@ export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<Gr
         // A refresh response may omit the ID token or a new refresh token; keep the scope it returns.
         response: grant.tokens,
         organization: set.organization,
-        tokenEndpoint: profile.endpoints.token,
+        tokenEndpoint,
         parentId: set.id,
       }),
     )
@@ -158,21 +158,23 @@ export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<Gr
   return grant
 }
 
-export async function switchWithDeviceSecret(set: TokenSet, org: Organization, scope: string): Promise<GrantResult> {
+export async function switchByTokenExchange(set: TokenSet, org: Organization, scope: string): Promise<GrantResult> {
   const profile = getState().profiles.find((p) => p.id === set.profileId) ?? activeProfile()
-  const deviceSecret = set.response.device_secret
-  if (typeof deviceSecret !== 'string') throw new Error('This token set has no device_secret. Sign in with the device_sso scope.')
-  const grant = await exchangeDeviceSecret(profile, org, credentialsFor(profile), deviceSecret, scope)
+  const field = profile.b2b.switchExchange.subjectTokenField
+  const subject = switchSubjectToken(profile, set)
+  if (!subject) throw new Error(`This token set has no ${field} to exchange.`)
+  const grant = await exchangeForOrganization(profile, org, credentialsFor(profile), subject, scope)
   if (grant.tokens) {
+    // Carry a long-lived subject (such as a device secret) over to the new set so switching can go on.
+    const carried = field !== 'access_token' && field !== 'id_token' && !grant.tokens[field] ? { [field]: subject } : {}
     addTokenSet(
       newTokenSet({
         label: `Switched to ${org.name}`,
-        grant: 'device_secret_exchange',
+        grant: 'token_exchange',
         profileId: set.profileId,
-        // Keep the device secret on the new set so the user can keep switching.
-        response: { device_secret: deviceSecret, ...grant.tokens },
+        response: { ...carried, ...grant.tokens },
         organization: org,
-        tokenEndpoint: orgEndpoints(profile, org).token,
+        tokenEndpoint: orgTokenEndpoint(profile, org),
         parentId: set.id,
       }),
     )

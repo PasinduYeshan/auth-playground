@@ -20,10 +20,24 @@ export interface KeyValue {
 }
 
 export interface Organization {
-  /** The value substituted for {org}: an OU ID on ThunderID. */
+  /** The value substituted for {org} in templates, or sent as the organization parameter. */
   id: string
   name: string
   handle?: string
+}
+
+/** Claims that name the organization a token was issued for. */
+export interface OrgClaims {
+  id: string
+  name: string
+  handle: string
+}
+
+/** Switching organization by token exchange (RFC 8693) at the organization's token endpoint. */
+export interface OrgSwitchExchange {
+  /** Field of the token response used as the subject token (for example device_secret or access_token). */
+  subjectTokenField: string
+  subjectTokenType: string
 }
 
 /** How a server selects an organization. Templates take {issuer} and {org}. */
@@ -33,26 +47,35 @@ export interface B2BConfig {
   tokenTemplate: string
   /** For style 'param': the authorization request parameter that names the organization. */
   paramName: string
-  /** Endpoint that lists the user's organizations with their access token (ThunderID: /users/me/ous). */
+  /** Optional endpoint that lists the user's organizations, called with their access token. */
   listTemplate: string
-  /** Redeem codes from an organization sign-in at the organization's token endpoint. */
+  /** Redeem codes from an organization sign-in at the organization's token endpoint (style 'path'). */
   redeemAtOrgTokenEndpoint: boolean
+  /** Send refresh requests to the organization's token endpoint instead of the default one. */
+  refreshAtOrgTokenEndpoint: boolean
+  orgClaims: OrgClaims
+  switchExchange: OrgSwitchExchange
   organizations: Organization[]
 }
 
-export const thunderIdB2B = (): B2BConfig => ({
-  style: 'path',
-  authorizeTemplate: '{issuer}/ou/{org}/oauth2/authorize',
-  tokenTemplate: '{issuer}/ou/{org}/oauth2/token',
+export const genericB2B = (): B2BConfig => ({
+  style: 'param',
+  authorizeTemplate: '{issuer}/o/{org}/authorize',
+  tokenTemplate: '{issuer}/o/{org}/token',
   paramName: 'organization',
-  listTemplate: '{issuer}/users/me/ous',
+  listTemplate: '',
   redeemAtOrgTokenEndpoint: true,
+  refreshAtOrgTokenEndpoint: false,
+  orgClaims: { id: 'org_id', name: 'org_name', handle: '' },
+  switchExchange: { subjectTokenField: 'access_token', subjectTokenType: 'urn:ietf:params:oauth:token-type:access_token' },
   organizations: [],
 })
 
 export interface Profile {
   id: string
   name: string
+  /** Provider preset (see presets.ts): fills defaults and shows provider-specific notes. */
+  preset: string
   issuer: string
   endpoints: Endpoints
   clientId: string
@@ -99,6 +122,7 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
   return {
     id: crypto.randomUUID(),
     name: 'New configuration',
+    preset: 'generic',
     issuer: '',
     endpoints: emptyEndpoints(),
     clientId: '',
@@ -118,7 +142,7 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
     extraTokenParams: [],
     introspectionClientId: '',
     introspectionAuthMethod: 'client_secret_basic',
-    b2b: thunderIdB2B(),
+    b2b: genericB2B(),
     updatedAt: Date.now(),
     ...partial,
   }
@@ -141,7 +165,7 @@ export interface TokenResponse {
   [key: string]: unknown
 }
 
-export type GrantKind = 'authorization_code' | 'refresh_token' | 'device_secret_exchange' | 'manual'
+export type GrantKind = 'authorization_code' | 'refresh_token' | 'token_exchange' | 'manual'
 
 /** One set of tokens from one grant, the unit the token views compare. */
 export interface TokenSet {

@@ -1,6 +1,7 @@
 // Saved configurations. Only non-secret fields are ever written to localStorage: the Profile type has
 // no secret fields, and sanitizeProfile drops anything unexpected (for example from an import).
 import { sanitizeB2B } from '../oauth/b2b'
+import { presetById } from '../oauth/presets'
 import { newProfile, type Profile } from '../oauth/types'
 
 const KEY = 'ap:profiles:v1'
@@ -23,7 +24,8 @@ export function sanitizeProfile(input: unknown): Profile {
       .filter((p) => p && typeof p.key === 'string' && !SECRET_LIKE.test(p.key))
       .map((p) => ({ key: p.key, value: String(p.value ?? ''), enabled: p.enabled !== false }))
   }
-  out.b2b = sanitizeB2B(src.b2b, base.b2b)
+  out.preset = presetById(typeof src.preset === 'string' ? src.preset : undefined).id
+  out.b2b = sanitizeB2B(src.b2b, presetById(out.preset as string).b2b())
   out.resources = Array.isArray(src.resources) ? (src.resources as unknown[]).map(String) : []
   return out as unknown as Profile
 }

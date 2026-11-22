@@ -24,11 +24,12 @@ const rowTone: Record<DiffStatus, string> = {
 const fmt = (v: unknown) => (v === undefined ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v))
 
 function SetPicker({ sets, value, onChange, label }: { sets: TokenSet[]; value?: string; onChange: (id: string) => void; label: string }) {
+  const profiles = useAppState((s) => s.profiles)
   return (
     <Field label={label}>
       <select className="input" value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
         {sets.map((s) => {
-          const org = organizationOf(s)
+          const org = organizationOf(s, profiles.find((p) => p.id === s.profileId)?.b2b.orgClaims)
           return (
             <option key={s.id} value={s.id}>
               {s.label}

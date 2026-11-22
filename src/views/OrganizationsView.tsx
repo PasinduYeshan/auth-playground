@@ -2,20 +2,26 @@ import { ArrowLeftRight, Building2, CloudDownload, KeyRound, Loader2, LogIn, Plu
 import { useState } from 'react'
 import { HttpExchangeView } from '../components/HttpExchangeView'
 import { Alert, Badge, Empty, Field, Section, cx } from '../components/ui'
-import { switchWithDeviceSecret } from '../lib/flows'
-import { fetchOrganizations, orgEndpoints, organizationOf } from '../lib/oauth/b2b'
+import { switchByTokenExchange } from '../lib/flows'
+import { fetchOrganizations, orgEndpoints, organizationOf, switchSubjectToken } from '../lib/oauth/b2b'
+import { presetById } from '../lib/oauth/presets'
 import type { HttpExchange } from '../lib/oauth/http'
-import { thunderIdB2B, type B2BConfig, type Organization, type Profile, type TokenSet } from '../lib/oauth/types'
+import { type B2BConfig, type Organization, type Profile, type TokenSet } from '../lib/oauth/types'
 import { activeProfile, setState, updateProfile, useAppState } from '../lib/store/appStore'
 import { RequestPreview, profileProblems } from './AuthorizeView'
 
 function B2BSettings({ profile }: { profile: Profile }) {
   const b2b = profile.b2b
+  const preset = presetById(profile.preset)
   const up = (patch: Partial<B2BConfig>) => updateProfile(profile.id, { b2b: { ...b2b, ...patch } })
   return (
-    <Section title="How this server selects an organization" defaultOpen={false} subtitle={b2b.style === 'path' ? 'by path' : `by parameter ${b2b.paramName}`}>
-      <div className="flex gap-2">
-        {(['path', 'param'] as const).map((st) => (
+    <Section
+      title="How this server handles organizations"
+      defaultOpen={false}
+      subtitle={b2b.style === 'path' ? 'organization in the path' : `parameter ${b2b.paramName}`}
+    >
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {(['param', 'path'] as const).map((st) => (
           <label key={st} className="flex items-center gap-1.5 text-sm">
             <input type="radio" checked={b2b.style === st} onChange={() => up({ style: st })} />
             {st === 'path' ? 'Organization in the endpoint path' : 'Organization as a request parameter'}
@@ -24,7 +30,7 @@ function B2BSettings({ profile }: { profile: Profile }) {
       </div>
       {b2b.style === 'path' ? (
         <>
-          <Field label="Authorization endpoint template" hint="{issuer} and {org} are substituted. ThunderID: {issuer}/ou/{org}/oauth2/authorize">
+          <Field label="Authorization endpoint template" hint="{issuer} and {org} are substituted, for example {issuer}/o/{org}/authorize.">
             <input className="input code" value={b2b.authorizeTemplate} onChange={(e) => up({ authorizeTemplate: e.target.value })} />
           </Field>
           <Field label="Token endpoint template">
@@ -34,21 +40,62 @@ function B2BSettings({ profile }: { profile: Profile }) {
             <input type="checkbox" checked={b2b.redeemAtOrgTokenEndpoint} onChange={(e) => up({ redeemAtOrgTokenEndpoint: e.target.checked })} />
             Redeem codes at the organization's token endpoint
           </label>
-          <p className="text-[11px] text-zinc-500">
-            ThunderID redeems at /ou/{'{org}'}/oauth2/token only codes whose sign-in landed in that organization, which needs ouId in the application's access token attributes. Untick to use the
-            default token endpoint.
-          </p>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={b2b.refreshAtOrgTokenEndpoint} onChange={(e) => up({ refreshAtOrgTokenEndpoint: e.target.checked })} />
+            Refresh at the organization's token endpoint (otherwise at the default one)
+          </label>
         </>
       ) : (
-        <Field label="Parameter name" hint="For example organization (Auth0) or org_id.">
+        <Field label="Parameter name" hint="Sent on the authorization request, for example organization or org_id.">
           <input className="input code" value={b2b.paramName} onChange={(e) => up({ paramName: e.target.value })} />
         </Field>
       )}
-      <Field label="List my organizations endpoint" hint="Called with the selected access token. ThunderID: {issuer}/users/me/ous">
-        <input className="input code" value={b2b.listTemplate} onChange={(e) => up({ listTemplate: e.target.value })} />
+      <div className="grid grid-cols-3 gap-2">
+        <Field label="Organization ID claim">
+          <input className="input code" value={b2b.orgClaims.id} onChange={(e) => up({ orgClaims: { ...b2b.orgClaims, id: e.target.value } })} />
+        </Field>
+        <Field label="Name claim">
+          <input className="input code" value={b2b.orgClaims.name} onChange={(e) => up({ orgClaims: { ...b2b.orgClaims, name: e.target.value } })} />
+        </Field>
+        <Field label="Handle claim">
+          <input className="input code" value={b2b.orgClaims.handle} onChange={(e) => up({ orgClaims: { ...b2b.orgClaims, handle: e.target.value } })} />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Switch: subject token" hint="Token response field exchanged when switching.">
+          <input
+            className="input code"
+            list="ap-subject-fields"
+            value={b2b.switchExchange.subjectTokenField}
+            onChange={(e) => up({ switchExchange: { ...b2b.switchExchange, subjectTokenField: e.target.value } })}
+          />
+          <datalist id="ap-subject-fields">
+            <option value="access_token" />
+            <option value="refresh_token" />
+            <option value="id_token" />
+            <option value="device_secret" />
+          </datalist>
+        </Field>
+        <Field label="Switch: subject_token_type">
+          <input
+            className="input code"
+            list="ap-token-types"
+            value={b2b.switchExchange.subjectTokenType}
+            onChange={(e) => up({ switchExchange: { ...b2b.switchExchange, subjectTokenType: e.target.value } })}
+          />
+          <datalist id="ap-token-types">
+            <option value="urn:ietf:params:oauth:token-type:access_token" />
+            <option value="urn:ietf:params:oauth:token-type:refresh_token" />
+            <option value="urn:ietf:params:oauth:token-type:id_token" />
+            <option value="urn:ietf:params:oauth:token-type:jwt" />
+          </datalist>
+        </Field>
+      </div>
+      <Field label="List my organizations endpoint (optional)" hint="Called with the selected access token. Takes {issuer}.">
+        <input className="input code" value={b2b.listTemplate} onChange={(e) => up({ listTemplate: e.target.value })} placeholder="{issuer}/me/organizations" />
       </Field>
-      <button type="button" className="btn-ghost text-xs" onClick={() => up({ ...thunderIdB2B(), organizations: b2b.organizations })}>
-        Reset to ThunderID defaults
+      <button type="button" className="btn-ghost text-xs" onClick={() => up({ ...preset.b2b(), organizations: b2b.organizations })}>
+        Reset to {preset.name} defaults
       </button>
     </Section>
   )
@@ -123,7 +170,7 @@ export function OrganizationsView() {
   const sets = useAppState((s) => s.tokenSets.filter((t) => t.profileId === profile.id))
   const selectedSetId = useAppState((s) => s.selectedTokenSetId)
   const baseSet: TokenSet | undefined = sets.find((s) => s.id === selectedSetId) ?? sets[0]
-  const current = baseSet ? organizationOf(baseSet) : undefined
+  const current = baseSet ? organizationOf(baseSet, profile.b2b.orgClaims) : undefined
   const [selectedOrgId, setSelectedOrgId] = useState<string>()
   const org = profile.b2b.organizations.find((o) => o.id === selectedOrgId)
   const [loading, setLoading] = useState(false)
@@ -132,7 +179,8 @@ export function OrganizationsView() {
   const [switching, setSwitching] = useState(false)
   const [switchResult, setSwitchResult] = useState<{ ok: boolean; message: string; exchange?: HttpExchange }>()
   const [switchScope, setSwitchScope] = useState('openid')
-  const hasDeviceSecret = typeof baseSet?.response.device_secret === 'string'
+  const subjectField = profile.b2b.switchExchange.subjectTokenField
+  const hasSubject = !!baseSet && !!switchSubjectToken(profile, baseSet)
   const problems = profileProblems(profile)
 
   const loadOrgs = async () => {
@@ -160,8 +208,8 @@ export function OrganizationsView() {
       <div>
         <h2 className="text-lg font-semibold">Organizations (B2B)</h2>
         <p className="text-sm text-zinc-500">
-          Sign in to a specific organization, switch between organizations, and compare what each token says. On ThunderID an organization is an organization unit (OU), and the application must be
-          shared with it.
+          Sign in to a specific organization, switch between organizations, and compare what each token says. Set how this server selects an organization below; presets fill it in for known
+          servers.
         </p>
       </div>
 
@@ -195,9 +243,11 @@ export function OrganizationsView() {
                   Token set: <span className="font-medium">{baseSet.label}</span>
                 </div>
                 <div>
-                  Organization: {current ? <Badge tone="violet">{current.name}</Badge> : <span className="text-zinc-500">none in the token (no ouId claim)</span>}
+                  Organization: {current ? <Badge tone="violet">{current.name}</Badge> : <span className="text-zinc-500">none in the token (no {profile.b2b.orgClaims.id || 'organization'} claim)</span>}
                 </div>
-                <div>Device secret: {hasDeviceSecret ? <Badge tone="blue">available</Badge> : <span className="text-zinc-500">none (sign in with the device_sso scope to get one)</span>}</div>
+                <div>
+                  Switch subject (<span className="code">{subjectField}</span>): {hasSubject ? <Badge tone="blue">available</Badge> : <span className="text-zinc-500">not in this token set</span>}
+                </div>
                 <button type="button" className="btn-ghost px-0 text-xs text-indigo-600" onClick={() => setState({ view: 'tokens' })}>
                   Choose another token set in Tokens
                 </button>
@@ -235,27 +285,28 @@ export function OrganizationsView() {
                     </h4>
                     <p className="text-xs text-zinc-500">
                       Reuses the server's SSO session: no screen is shown if the session can reach this organization; otherwise the server answers login_required. The redirect is full page
-                      because ThunderID does not allow framing.
+                      because many servers refuse to be framed.
                     </p>
                     <RequestPreview profile={profile} org={org} overrides={[['prompt', 'none']]} label={`Silent switch to ${org.name}`} startLabel="Switch silently" />
                   </div>
                   <div className="space-y-2 border-t border-zinc-200 pt-4 dark:border-zinc-800">
                     <h4 className="flex items-center gap-1.5 text-sm font-semibold">
-                      <KeyRound size={15} /> Switch with the device secret
+                      <KeyRound size={15} /> Switch by token exchange
                     </h4>
                     <p className="text-xs text-zinc-500">
-                      Token exchange of the selected set's device_secret at this organization's token endpoint, with no browser round trip. Needs the token exchange grant on the client.
+                      Exchanges the selected set's <span className="code">{subjectField}</span> (RFC 8693) at this organization's token endpoint, with no browser round trip. The client needs the token
+                      exchange grant.
                     </p>
                     <div className="flex gap-1.5">
                       <input className="input code flex-1" value={switchScope} onChange={(e) => setSwitchScope(e.target.value)} placeholder="scope" />
                       <button
                         type="button"
                         className="btn-primary shrink-0"
-                        disabled={!hasDeviceSecret || switching}
+                        disabled={!hasSubject || switching}
                         onClick={() => {
                           if (!baseSet) return
                           setSwitching(true)
-                          switchWithDeviceSecret(baseSet, org, switchScope)
+                          switchByTokenExchange(baseSet, org, switchScope)
                             .then((g) =>
                               setSwitchResult({
                                 ok: !!g.tokens,
@@ -270,7 +321,7 @@ export function OrganizationsView() {
                         {switching ? <Loader2 size={14} className="animate-spin" /> : <ArrowLeftRight size={14} />} Exchange
                       </button>
                     </div>
-                    {!hasDeviceSecret && <p className="text-xs text-amber-600">The selected token set has no device_secret.</p>}
+                    {!hasSubject && <p className="text-xs text-amber-600">The selected token set has no {subjectField}.</p>}
                     {switchResult && (
                       <div className="space-y-2">
                         <Alert tone={switchResult.ok ? 'green' : 'red'}>

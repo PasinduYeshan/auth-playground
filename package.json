@@ -29,7 +29,7 @@
     "vite": "^8.3.6",
     "vitest": "^5.1.1"
   },
-  "description": "OAuth 2.0 and OpenID Connect testing in the browser, built for ThunderID",
+  "description": "OAuth 2.0 and OpenID Connect testing in the browser, for any standards-based server",
   "engines": {
     "node": ">=22"
   }

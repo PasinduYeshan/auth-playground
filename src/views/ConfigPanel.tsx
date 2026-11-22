@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { KeyValueEditor } from '../components/KeyValueEditor'
 import { Alert, Badge, Field, SecretInput, Section, cx } from '../components/ui'
 import { runDiscovery } from '../lib/flows'
+import { PRESETS, presetById } from '../lib/oauth/presets'
 import { defaultRedirectUri, newProfile, type ClientAuthMethod, type Endpoints, type Profile } from '../lib/oauth/types'
 import { activeProfile, addProfile, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
 import { exportProfile, importProfile } from '../lib/store/profiles'
@@ -101,7 +102,9 @@ function ProfileBar({ profile }: { profile: Profile }) {
 }
 
 function ScopeChips({ profile }: { profile: Profile }) {
-  const supported = useAppState((s) => s.metadata[profile.id]?.scopes_supported)
+  const discovered = useAppState((s) => s.metadata[profile.id]?.scopes_supported)
+  const extra = presetById(profile.preset).extraScopes
+  const supported = discovered?.length ? [...new Set([...discovered, ...extra])] : undefined
   if (!supported?.length) return null
   const current = new Set(profile.scope.split(/\s+/).filter(Boolean))
   return (
@@ -138,6 +141,7 @@ export function ConfigPanel() {
   const [discovering, setDiscovering] = useState(false)
   const [discoveryMsg, setDiscoveryMsg] = useState<{ tone: 'green' | 'red' | 'amber'; text: string }>()
   const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
+  const preset = presetById(profile.preset)
 
   const doDiscover = async () => {
     if (!profile.issuer) return
@@ -161,12 +165,28 @@ export function ConfigPanel() {
       <ProfileBar profile={profile} />
 
       <Section title="Provider" subtitle={metadata ? <Badge tone="green">discovered</Badge> : undefined}>
-        <Field label="Issuer or discovery URL" hint="For example https://localhost:8090 for a local ThunderID.">
+        <Field label="Provider" hint="A preset fills defaults for a known server. Every value stays editable.">
+          <select
+            className="input"
+            value={preset.id}
+            onChange={(e) => {
+              const next = presetById(e.target.value)
+              up({ preset: next.id, b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
+            }}
+          >
+            {PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Issuer / base URL" hint={preset.issuerHint}>
           <div className="flex gap-1.5">
             <input
               className="input code"
               value={profile.issuer}
-              placeholder="https://localhost:8090"
+              placeholder={preset.issuerPlaceholder}
               onChange={(e) => up({ issuer: e.target.value })}
               onKeyDown={(e) => e.key === 'Enter' && void doDiscover()}
             />
@@ -177,6 +197,16 @@ export function ConfigPanel() {
           </div>
         </Field>
         {discoveryMsg && <Alert tone={discoveryMsg.tone}>{discoveryMsg.text}</Alert>}
+        {preset.notes.length > 0 && (
+          <details className="rounded-lg bg-zinc-50 px-3 py-2 text-xs dark:bg-zinc-950">
+            <summary className="cursor-pointer font-medium text-zinc-600 select-none dark:text-zinc-400">Notes for {preset.name}</summary>
+            <ul className="mt-1.5 list-disc space-y-1 pl-4 text-zinc-600 dark:text-zinc-400">
+              {preset.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </details>
+        )}
         <details className="group">
           <summary className="cursor-pointer text-xs font-medium text-zinc-600 select-none dark:text-zinc-400">Endpoints</summary>
           <div className="mt-2 space-y-2">
@@ -211,7 +241,7 @@ export function ConfigPanel() {
             <Alert tone="amber">
               A secret in a browser is for testing only. Use a test client, never a production one.
               {profile.clientAuthMethod === 'client_secret_basic' &&
-                ' client_secret_basic sends an Authorization header, which needs a CORS preflight: ThunderID\'s token endpoint does not answer preflight, so use client_secret_post there.'}
+                ' client_secret_basic sends an Authorization header, which needs a CORS preflight. If the token endpoint does not answer preflight, use client_secret_post.'}
             </Alert>
           </>
         )}
@@ -281,7 +311,7 @@ export function ConfigPanel() {
             <input type="checkbox" checked={profile.useNonce} onChange={(e) => up({ useNonce: e.target.checked })} /> Send nonce
           </label>
         </div>
-        {profile.pkceMethod === 'plain' && <Alert tone="amber">plain PKCE gives no protection if the request is observed. ThunderID refuses it.</Alert>}
+        {profile.pkceMethod === 'plain' && <Alert tone="amber">plain PKCE gives no protection if the request is observed. Many servers refuse it.</Alert>}
         {profile.responseMode === 'form_post' && (
           <Alert tone="red">form_post sends the response as a POST, which a static site cannot receive. The callback will not see the code.</Alert>
         )}
@@ -297,7 +327,7 @@ export function ConfigPanel() {
       </Section>
 
       <Section title="Introspection client" defaultOpen={false} subtitle="optional">
-        <p className="text-xs text-zinc-500">Leave empty to introspect with the client above. ThunderID accepts any registered client, public ones included.</p>
+        <p className="text-xs text-zinc-500">Leave empty to introspect with the client above. Some servers accept public clients; others need a confidential one.</p>
         <Field label="Client ID">
           <input className="input code" value={profile.introspectionClientId} onChange={(e) => up({ introspectionClientId: e.target.value })} />
         </Field>

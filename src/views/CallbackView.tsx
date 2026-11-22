@@ -10,7 +10,7 @@ let pendingRun: Promise<CallbackOutcome> | undefined
 
 const ERROR_HINTS: Record<string, string> = {
   access_denied: 'The user or the server refused the request.',
-  unauthorized_client: 'The client may not use this flow, or (ThunderID) it is not shared with the requested organization.',
+  unauthorized_client: 'The client may not use this flow, or it is not available in the requested organization.',
   invalid_request: 'A parameter is missing or malformed. Check the redirect URI, PKCE method and scope.',
   invalid_scope: 'A requested scope is unknown or not allowed for this client.',
   login_required: 'prompt=none was sent but there is no session to reuse. Sign in interactively.',
