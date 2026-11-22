@@ -53,14 +53,65 @@ export function saveActiveProfileId(id: string): void {
   localStorage.setItem(ACTIVE_KEY, id)
 }
 
-export function exportProfile(p: Profile): string {
+// Configuration files. The envelope names the format so other JSON is refused with a clear message;
+// a bare configuration object (the earlier copy format) is accepted too.
+export const CONFIG_FILE_FORMAT = 'auth-playground/configurations'
+export const CONFIG_FILE_VERSION = 1
+export const MAX_IMPORT_BYTES = 1024 * 1024
+
+function portable(p: Profile): Omit<Profile, 'id' | 'updatedAt'> {
   const { id: _id, updatedAt: _u, ...rest } = sanitizeProfile(p)
   void _id
   void _u
-  return JSON.stringify(rest, null, 2)
+  return rest
 }
 
-export function importProfile(json: string): Profile {
-  const parsed = JSON.parse(json) as unknown
-  return { ...sanitizeProfile(parsed), id: crypto.randomUUID(), updatedAt: Date.now() }
+export function exportProfiles(profiles: Profile[]): string {
+  return JSON.stringify(
+    { format: CONFIG_FILE_FORMAT, version: CONFIG_FILE_VERSION, exportedAt: new Date().toISOString(), configurations: profiles.map(portable) },
+    null,
+    2,
+  )
+}
+
+/** A file name such as auth-playground-my-idp.json, or auth-playground-configurations.json for several. */
+export function exportFileName(profiles: Profile[]): string {
+  const slug =
+    profiles.length === 1
+      ? profiles[0].name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'configuration'
+      : 'configurations'
+  return `auth-playground-${slug}.json`
+}
+
+/** Parses an exported file into new profiles (fresh IDs, secrets dropped). Throws with a readable message. */
+export function parseConfigFile(text: string, existingNames: string[] = []): Profile[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('The file is not valid JSON.')
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('The file does not contain a configuration.')
+  const obj = parsed as Record<string, unknown>
+  let items: unknown[]
+  if (obj.format !== undefined) {
+    if (obj.format !== CONFIG_FILE_FORMAT) throw new Error('This is not an Auth Playground configuration file.')
+    if (typeof obj.version === 'number' && obj.version > CONFIG_FILE_VERSION)
+      throw new Error('The file was made by a newer version of Auth Playground.')
+    if (!Array.isArray(obj.configurations)) throw new Error('The file has no configurations.')
+    items = obj.configurations
+  } else if ('endpoints' in obj || 'clientId' in obj || 'issuer' in obj) {
+    items = [obj]
+  } else {
+    throw new Error('This is not an Auth Playground configuration file.')
+  }
+  if (items.length === 0) throw new Error('The file has no configurations.')
+  const names = new Set(existingNames)
+  return items.map((item) => {
+    const p = { ...sanitizeProfile(item), id: crypto.randomUUID(), updatedAt: Date.now() }
+    let name = p.name
+    for (let i = 2; names.has(name); i++) name = `${p.name} (${i})`
+    names.add(name)
+    return { ...p, name }
+  })
 }

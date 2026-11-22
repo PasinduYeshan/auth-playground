@@ -1,6 +1,6 @@
 # Auth Playground: research, architecture and plan
 
-Auth Playground is a browser-only OAuth 2.0 and OpenID Connect test bench for any standards-based server. Provider-specific behaviour lives in presets (`src/lib/oauth/presets.ts`) that only fill defaults; ThunderID is the first preset and the server the playground is verified against. It is hosted as static files (GitHub Pages, `auth.playground.yeshandev.com`).
+Auth Playground is a browser-only OAuth 2.0 and OpenID Connect test bench for any standards-based server. Provider-specific behaviour lives in presets (`src/lib/oauth/presets.ts`) that only fill defaults; ThunderID is the first preset and the server the playground is verified against. It is hosted as static files (GitHub Pages, `auth-playground.yeshandev.com`).
 
 ## 1. Research
 
@@ -99,7 +99,7 @@ Each future grant (client credentials, device authorization, token exchange, CIB
 
 ### 3.5 Routing and hosting
 
-Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect URI `https://auth.playground.yeshandev.com/callback` is a real file on GitHub Pages (no 404 fallback). A GitHub Actions workflow builds and deploys. `public/CNAME` sets the custom domain.
+Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect URI `https://auth-playground.yeshandev.com/callback` is a real file on GitHub Pages (no 404 fallback). A GitHub Actions workflow builds and deploys. `public/CNAME` sets the custom domain.
 
 ## 4. Plan
 
@@ -126,11 +126,11 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
    name: cors
    value:
      allowedOrigins:
-       - "https://auth.playground.yeshandev.com"
+       - "https://auth-playground.yeshandev.com"
        - "http://localhost:5173"
    ```
 
-2. Create a browser application: public client, `tokenEndpointAuthMethod: none`, `pkceRequired: true`, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch), redirect URI `https://auth.playground.yeshandev.com/callback`, post-logout redirect URI `https://auth.playground.yeshandev.com/`. Add `ouId`, `ouName`, `ouHandle` to the access token attributes for B2B, and map scopes to claims (`scopeClaims`) so UserInfo returns more than `sub`.
+2. Create a browser application: public client, `tokenEndpointAuthMethod: none`, `pkceRequired: true`, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch), redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. Add `ouId`, `ouName`, `ouHandle` to the access token attributes for B2B, and map scopes to claims (`scopeClaims`) so UserInfo returns more than `sub`.
 3. For B2B, share the application with the child OUs (`POST /applications/{id}/sharing-policies {"childUnits":{"mode":"all"}}`; a `sharingPolicies` field in the create request is ignored).
 
 `scripts/thunderid-setup.sh` does all of this against a local server.

@@ -56,8 +56,10 @@ export function CompareView() {
   const right = sets.find((s) => s.id === rightId) ?? sets[0]
   const l = claimsOf(left, which)
   const r = claimsOf(right, which)
-  const rows = l && r ? diffClaims(l, r).filter((row) => !(hideVolatile && isVolatileClaim(row.claim)) && !(onlyDiff && row.status === 'same')) : []
-  const counts = l && r ? diffClaims(l, r).reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.status]: (acc[x.status] ?? 0) + 1 }), {}) : {}
+  // Counts follow the per-token filter, so the badges match the rows shown.
+  const considered = l && r ? diffClaims(l, r).filter((row) => !(hideVolatile && isVolatileClaim(row.claim))) : []
+  const rows = considered.filter((row) => !(onlyDiff && row.status === 'same'))
+  const counts = considered.reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.status]: (acc[x.status] ?? 0) + 1 }), {})
 
   return (
     <div className="space-y-4">

@@ -2,7 +2,9 @@
 
 A browser-only OAuth 2.0 and OpenID Connect test bench for any standards-based authorization server. Inspired by OIDC Debugger, with token operations, organization (B2B) testing and a full HTTP log. Provider presets fill in defaults for known servers; [ThunderID](https://thunderid.dev) is the first preset and the server it is tested against.
 
-Live: <https://auth.playground.yeshandev.com>
+Live: <https://auth-playground.yeshandev.com>
+
+![Decoded access token with signature and claim checks](docs/screenshots/tokens.png)
 
 ## What it does
 
@@ -13,7 +15,20 @@ Live: <https://auth.playground.yeshandev.com>
 - **Organizations (B2B)**: the organization goes in the endpoint path (`{issuer}/o/{org}/authorize`) or in a request parameter (`organization=...`), with configurable organization claims. Sign in to an organization, redeem at its token endpoint, switch silently with `prompt=none` or by token exchange (RFC 8693), list the user's organizations, and compare claims between any two token sets.
 - **Provider presets**: Generic OAuth 2.0 / OpenID Connect, and ThunderID. A preset fills organization handling, claim names and placeholders, and shows notes about the server. Every value stays editable.
 - **HTTP log**: every request and response, secrets masked unless revealed, copy as curl.
-- **Saved configurations** in `localStorage`, with import and export. Client secrets are never saved.
+- **Saved configurations** in `localStorage`. Export one or all of them to a `.json` file, and import by choosing a file or dropping it on the configuration panel. Client secrets are never saved or exported.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Authorization request preview](docs/screenshots/authorize.png) | ![Token operations: introspection result](docs/screenshots/operations.png) |
+| **Authorize**: the request, every parameter explained, PKCE generated per request. | **Operations**: refresh, UserInfo, introspection, revocation and logout, with the exchange. |
+| ![Organizations: list, sign in and switch](docs/screenshots/organizations.png) | ![Compare claims between two organizations](docs/screenshots/compare.png) |
+| **Organizations**: the user's organizations, sign-in to one, switch by token exchange. | **Compare**: what changes between two token sets. |
+| ![HTTP log with masked secrets](docs/screenshots/http-log.png) | ![Dark theme](docs/screenshots/tokens-dark.png) |
+| **HTTP log**: every request and response, secrets masked, copy as curl. | **Dark theme**. |
+
+Screenshots are from a local ThunderID server with test data.
 
 ## Security model
 
@@ -27,7 +42,7 @@ Use test clients and test users. A browser is not the place for production clien
 
 ## Using it
 
-1. Register a client with redirect URI `https://auth.playground.yeshandev.com/callback` (and post-logout redirect URI `https://auth.playground.yeshandev.com/` for logout). A public client with PKCE is the natural fit for a browser.
+1. Register a client with redirect URI `https://auth-playground.yeshandev.com/callback` (and post-logout redirect URI `https://auth-playground.yeshandev.com/` for logout). A public client with PKCE is the natural fit for a browser.
 2. Allow the playground's origin in the server's CORS settings, so the browser can call the token, UserInfo, introspection and revocation endpoints.
 3. Pick a provider preset, enter the issuer or base URL, press **Discover**, enter the client ID and sign in.
 
@@ -42,11 +57,11 @@ Choose the **ThunderID** preset and enter the server's base URL (for example `ht
    name: cors
    value:
      allowedOrigins:
-       - "https://auth.playground.yeshandev.com"
+       - "https://auth-playground.yeshandev.com"
        - "http://localhost:5173"
    ```
 
-2. **Create a browser application**: public client, token endpoint authentication `none`, PKCE required, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch). Redirect URI `https://auth.playground.yeshandev.com/callback`, post-logout redirect URI `https://auth.playground.yeshandev.com/`. For organizations, add `ouId`, `ouName` and `ouHandle` to the access token attributes and share the application with the organizations.
+2. **Create a browser application**: public client, token endpoint authentication `none`, PKCE required, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch). Redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. For organizations, add `ouId`, `ouName` and `ouHandle` to the access token attributes and share the application with the organizations.
 
 `scripts/thunderid-setup.sh` does steps 1 and 2 against a running server. It also creates two organizations and test users:
 

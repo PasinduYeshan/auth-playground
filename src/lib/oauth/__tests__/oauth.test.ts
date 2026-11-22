@@ -6,7 +6,7 @@ import { buildAuthorizationRequest, checkCallback, parseCallback, savePending, t
 import { basicAuthHeader, applyClientAuth } from '../client'
 import { discoveryUrls } from '../discovery'
 import { newProfile } from '../types'
-import { exportProfile, importProfile, sanitizeProfile } from '../../store/profiles'
+import { exportFileName, exportProfiles, parseConfigFile, sanitizeProfile } from '../../store/profiles'
 
 const enc = (o: unknown) => base64UrlEncode(new TextEncoder().encode(JSON.stringify(o)))
 
@@ -148,9 +148,36 @@ describe('profile storage', () => {
       clientSecret: 'leak',
       extraTokenParams: [{ key: 'client_secret', value: 'leak', enabled: true }, { key: 'audience', value: 'x', enabled: true }],
     })
-    const json = exportProfile(p)
+    const json = exportProfiles([p])
     expect(json).not.toContain('leak')
-    expect(importProfile(json).extraTokenParams.map((x) => x.key)).toEqual(['audience'])
+    expect(parseConfigFile(json)[0].extraTokenParams.map((x) => x.key)).toEqual(['audience'])
     expect(base64UrlDecodeToString(base64UrlEncode(new TextEncoder().encode('ok')))).toBe('ok')
+  })
+})
+
+describe('configuration files', () => {
+  const a = newProfile({ name: 'My IdP', clientId: 'a' })
+  const b = newProfile({ name: 'Other', clientId: 'b' })
+  it('round-trips several configurations with fresh IDs and unique names', () => {
+    const imported = parseConfigFile(exportProfiles([a, b]), ['My IdP'])
+    expect(imported.map((p) => p.name)).toEqual(['My IdP (2)', 'Other'])
+    expect(imported.map((p) => p.clientId)).toEqual(['a', 'b'])
+    expect(imported[0].id).not.toBe(a.id)
+  })
+  it('accepts a bare configuration object', () => {
+    const { id: _i, updatedAt: _u, ...bare } = a
+    void _i
+    void _u
+    expect(parseConfigFile(JSON.stringify(bare))[0].clientId).toBe('a')
+  })
+  it('refuses other files with a readable message', () => {
+    expect(() => parseConfigFile('not json')).toThrow('not valid JSON')
+    expect(() => parseConfigFile('{"name":"x"}')).toThrow('not an Auth Playground configuration file')
+    expect(() => parseConfigFile('{"format":"other","configurations":[]}')).toThrow('not an Auth Playground configuration file')
+    expect(() => parseConfigFile('{"format":"auth-playground/configurations","version":99,"configurations":[{}]}')).toThrow('newer version')
+  })
+  it('names files after the configuration', () => {
+    expect(exportFileName([a])).toBe('auth-playground-my-idp.json')
+    expect(exportFileName([a, b])).toBe('auth-playground-configurations.json')
   })
 })

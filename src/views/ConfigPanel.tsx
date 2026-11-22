@@ -1,12 +1,12 @@
-import { Copy, Download, FilePlus2, Loader2, Radar, Trash2, Upload } from 'lucide-react'
-import { useState } from 'react'
+import { Copy, Download, FileDown, FilePlus2, Loader2, Radar, Trash2, Upload } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { KeyValueEditor } from '../components/KeyValueEditor'
 import { Alert, Badge, Field, SecretInput, Section, cx } from '../components/ui'
 import { runDiscovery } from '../lib/flows'
 import { PRESETS, presetById } from '../lib/oauth/presets'
 import { defaultRedirectUri, newProfile, type ClientAuthMethod, type Endpoints, type Profile } from '../lib/oauth/types'
-import { activeProfile, addProfile, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
-import { exportProfile, importProfile } from '../lib/store/profiles'
+import { activeProfile, addProfile, addProfiles, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
+import { MAX_IMPORT_BYTES, exportFileName, exportProfiles, parseConfigFile } from '../lib/store/profiles'
 
 const AUTH_METHODS: { id: ClientAuthMethod; label: string }[] = [
   { id: 'none', label: 'none (public client)' },
@@ -24,14 +24,59 @@ const ENDPOINT_LABELS: [keyof Endpoints, string][] = [
   ['endSession', 'End session (logout)'],
 ]
 
+function downloadJson(fileName: string, json: string): void {
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 function ProfileBar({ profile }: { profile: Profile }) {
   const profiles = useAppState((s) => s.profiles)
-  const [importing, setImporting] = useState(false)
-  const [importText, setImportText] = useState('')
-  const [importError, setImportError] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [status, setStatus] = useState<{ tone: 'green' | 'red'; text: string }>()
+  const [dragging, setDragging] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  const exportList = (list: Profile[]) => {
+    downloadJson(exportFileName(list), exportProfiles(list))
+    setExportOpen(false)
+    setStatus({ tone: 'green', text: `Exported ${list.length === 1 ? `"${list[0].name}"` : `${list.length} configurations`}. Secrets are never included.` })
+  }
+
+  const importFile = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      if (file.size > MAX_IMPORT_BYTES) throw new Error('The file is larger than 1 MB.')
+      const imported = parseConfigFile(await file.text(), profiles.map((p) => p.name))
+      addProfiles(imported)
+      setStatus({ tone: 'green', text: `Imported ${imported.length === 1 ? `"${imported[0].name}"` : `${imported.length} configurations`} from ${file.name}.` })
+    } catch (e) {
+      setStatus({ tone: 'red', text: `Could not import ${file.name}: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
+
   return (
-    <div className="space-y-2 border-b border-zinc-200 p-4 dark:border-zinc-800">
+    <div
+      className={cx('space-y-2 border-b border-zinc-200 p-4 dark:border-zinc-800', dragging && 'bg-indigo-50/60 ring-2 ring-indigo-400 ring-inset dark:bg-indigo-950/40')}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragging(false)
+        void importFile(e.dataTransfer.files[0])
+      }}
+    >
       <div className="flex items-center gap-1.5">
         <select className="input flex-1 font-medium" value={profile.id} onChange={(e) => setState({ activeProfileId: e.target.value })}>
           {profiles.map((p) => (
@@ -51,17 +96,13 @@ function ProfileBar({ profile }: { profile: Profile }) {
         >
           <Copy size={16} />
         </button>
-        <button
-          type="button"
-          className="btn-ghost px-2"
-          title="Copy as JSON (no secrets)"
-          onClick={() => void navigator.clipboard.writeText(exportProfile(profile)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
-        >
-          <Download size={16} className={cx(copied && 'text-emerald-500')} />
+        <button type="button" className={cx('btn-ghost px-2', exportOpen && 'bg-zinc-100 dark:bg-zinc-800')} title="Export to a file" onClick={() => setExportOpen(!exportOpen)}>
+          <Download size={16} />
         </button>
-        <button type="button" className="btn-ghost px-2" title="Import from JSON" onClick={() => setImporting(!importing)}>
+        <button type="button" className="btn-ghost px-2" title="Import from a file" onClick={() => fileInput.current?.click()}>
           <Upload size={16} />
         </button>
+        <input ref={fileInput} type="file" accept=".json,application/json" className="hidden" onChange={(e) => void importFile(e.target.files?.[0])} />
         <button
           type="button"
           className="btn-ghost px-2 hover:text-red-600"
@@ -73,30 +114,23 @@ function ProfileBar({ profile }: { profile: Profile }) {
           <Trash2 size={16} />
         </button>
       </div>
-      <input className="input" value={profile.name} onChange={(e) => updateProfile(profile.id, { name: e.target.value })} aria-label="Configuration name" />
-      {importing && (
-        <div className="space-y-1.5">
-          <textarea className="input code h-28" placeholder="Paste a configuration exported from Auth Playground" value={importText} onChange={(e) => setImportText(e.target.value)} />
-          {importError && <div className="text-xs text-red-600">{importError}</div>}
-          <button
-            type="button"
-            className="btn-secondary w-full"
-            onClick={() => {
-              try {
-                addProfile(importProfile(importText))
-                setImporting(false)
-                setImportText('')
-                setImportError('')
-              } catch (e) {
-                setImportError(e instanceof Error ? e.message : 'Invalid JSON')
-              }
-            }}
-          >
-            Import
+      {exportOpen && (
+        <div className="flex gap-1.5">
+          <button type="button" className="btn-secondary flex-1 text-xs" onClick={() => exportList([profile])}>
+            <FileDown size={14} /> This configuration
+          </button>
+          <button type="button" className="btn-secondary flex-1 text-xs" onClick={() => exportList(profiles)} disabled={profiles.length < 2}>
+            <FileDown size={14} /> All ({profiles.length})
           </button>
         </div>
       )}
-      <p className="text-[11px] text-zinc-500">Saved in this browser. Client secrets are never saved.</p>
+      <input className="input" value={profile.name} onChange={(e) => updateProfile(profile.id, { name: e.target.value })} aria-label="Configuration name" />
+      {status && (
+        <div role="status" className={cx('text-xs', status.tone === 'green' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+          {status.text}
+        </div>
+      )}
+      <p className="text-[11px] text-zinc-500">Saved in this browser. Export to a .json file or drop one here to import. Client secrets are never saved or exported.</p>
     </div>
   )
 }

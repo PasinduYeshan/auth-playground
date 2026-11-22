@@ -134,6 +134,11 @@ export function addProfile(p: Profile): void {
   setState((s) => ({ profiles: [...s.profiles, p], activeProfileId: p.id }))
 }
 
+export function addProfiles(list: Profile[]): void {
+  if (list.length === 0) return
+  setState((s) => ({ profiles: [...s.profiles, ...list], activeProfileId: list[0].id }))
+}
+
 export function deleteProfile(id: string): void {
   setState((s) => {
     const profiles = s.profiles.filter((p) => p.id !== id)

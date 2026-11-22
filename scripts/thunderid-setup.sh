@@ -6,7 +6,7 @@
 #   4. creates test users: one in each organization, and one shared into both.
 #
 # Usage: BASE=https://localhost:8090 ADMIN_PASSWORD=... ./scripts/thunderid-setup.sh
-# Optional: ORIGINS="https://auth.playground.yeshandev.com http://localhost:5173"
+# Optional: ORIGINS="https://auth-playground.yeshandev.com http://localhost:5173"
 #           CLIENT_ID=auth-playground   REDIRECTS="<origin>/callback ..."
 # Needs curl, jq and openssl. Writes the created IDs to scripts/.thunderid-env (git-ignored).
 set -euo pipefail
@@ -14,7 +14,7 @@ set -euo pipefail
 BASE="${BASE:-https://localhost:8090}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:?set ADMIN_PASSWORD to the ThunderID admin password}"
-ORIGINS="${ORIGINS:-https://auth.playground.yeshandev.com http://localhost:5173}"
+ORIGINS="${ORIGINS:-https://auth-playground.yeshandev.com http://localhost:5173}"
 CLIENT_ID="${CLIENT_ID:-auth-playground}"
 TEST_PASSWORD="${TEST_PASSWORD:-Playground@123}"
 DEFAULT_OU="01900000-0000-7000-8000-000000000001"
