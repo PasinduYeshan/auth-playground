@@ -50,18 +50,29 @@ describe('JWT', () => {
   it('flags alg none and an unknown kid', async () => {
     const none = decodeToken(`${enc({ alg: 'none' })}.${enc({})}.`)
     expect((await verifySignature(none, { keys: [] })).status).toBe('invalid')
+    // An unknown kid may be a rotated key: unverified, flagged so the caller fetches the JWKS again.
     const { token, jwks } = await signJwt({ kid: 'other' }, {})
-    expect((await verifySignature(decodeToken(token), jwks)).status).toBe('invalid')
+    expect(await verifySignature(decodeToken(token), jwks)).toMatchObject({ status: 'unverified', unknownKey: true })
   })
   it('checks ID token claims', async () => {
     const now = 1_800_000_000
     const at = 'access-token-value'
     const atHash = await halfHash(at, 'RS256')
-    const tok = decodeToken(`${enc({ alg: 'RS256' })}.${enc({ iss: 'https://idp', aud: 'c1', exp: now + 60, iat: now, nonce: 'n1', at_hash: atHash })}.x`)
+    const tok = decodeToken(`${enc({ alg: 'RS256' })}.${enc({ iss: 'https://idp', sub: 'u1', aud: 'c1', exp: now + 60, iat: now, nonce: 'n1', at_hash: atHash })}.x`)
     const checks = await checkIdTokenClaims(tok, { issuer: 'https://idp', audience: 'c1', nonce: 'n1', accessToken: at, now })
     expect(checks.every((c) => c.status === 'pass')).toBe(true)
     const bad = await checkIdTokenClaims(tok, { issuer: 'https://other', audience: 'c2', nonce: 'n2', now: now + 3600 })
     expect(bad.filter((c) => c.status === 'fail').map((c) => c.name).sort()).toEqual(['aud', 'exp', 'iss', 'nonce'])
+  })
+  it('checks azp, sub and auth_time (OIDC Core)', async () => {
+    const now = 1_800_000_000
+    const tok = (claims: object) => decodeToken(`${enc({ alg: 'RS256' })}.${enc({ iss: 'https://idp', aud: 'c1', exp: now + 60, iat: now, ...claims })}.x`)
+    const fails = async (claims: object, extra = {}) =>
+      (await checkIdTokenClaims(tok(claims), { audience: 'c1', now, ...extra })).filter((c) => c.status === 'fail').map((c) => c.name)
+    expect(await fails({ sub: 'u', azp: 'someone-else' })).toEqual(['azp'])
+    expect(await fails({})).toEqual(['sub'])
+    expect(await fails({ sub: 'u' }, { maxAge: 300 })).toEqual(['auth_time'])
+    expect(await fails({ sub: 'u', auth_time: now - 10 }, { maxAge: 300 })).toEqual([])
   })
 })
 

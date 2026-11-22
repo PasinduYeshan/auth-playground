@@ -24,7 +24,9 @@ DEFAULT_OU="01900000-0000-7000-8000-000000000001"
 # Bootstrap flows: the sign-in flow the browser application uses and the default device grant flow.
 AUTH_FLOW="${AUTH_FLOW:-01900000-0000-7000-8000-000000000068}"
 DEFAULT_DEVICE_FLOW="01900000-0000-7000-8000-00000000008a"
-SYSTEM_RS="https://localhost:8090/mcp"
+# The Console's system resource server identifier. It is a fixed name from the server's bootstrap
+# data, not derived from BASE; override it if your server's bootstrap uses another.
+SYSTEM_RS="${SYSTEM_RS:-https://localhost:8090/mcp}"
 CONSOLE_REDIRECT="${CONSOLE_REDIRECT:-$BASE/console}"
 ENV_FILE="$(cd "$(dirname "$0")" && pwd)/.thunderid-env"
 SUFFIX="${SUFFIX:-$(date +%s | tail -c 5)}"
@@ -55,9 +57,11 @@ admin_token() {
   [ -n "$exec_id" ] || { echo "authorize failed: $location" >&2; exit 1; }
   step="$(curl -sk "$BASE/flow/execute" -H 'Content-Type: application/json' -d "{\"executionId\":\"$exec_id\"}")"
   local ct; ct="$(jq -r '.challengeToken // empty' <<<"$step")"
-  step="$(curl -sk "$BASE/flow/execute" -H 'Content-Type: application/json' -d "$(jq -nc --arg e "$exec_id" --arg c "$ct" \
-    --arg u "$ADMIN_USERNAME" --arg p "$ADMIN_PASSWORD" '{executionId:$e, action:"action_001", inputs:{username:$u, password:$p}}
-    + (if $c == "" then {} else {challengeToken:$c} end)')")"
+  # The password goes through the environment and stdin, never a command-line argument (ps shows those).
+  step="$(ADMIN_PASSWORD="$ADMIN_PASSWORD" jq -nc --arg e "$exec_id" --arg c "$ct" --arg u "$ADMIN_USERNAME" \
+    '{executionId:$e, action:"action_001", inputs:{username:$u, password:env.ADMIN_PASSWORD}}
+    + (if $c == "" then {} else {challengeToken:$c} end)' \
+    | curl -sk "$BASE/flow/execute" -H 'Content-Type: application/json' --data-binary @-)"
   assertion="$(jq -r '.assertion // empty' <<<"$step")"
   [ -n "$assertion" ] || { echo "admin sign-in failed: $step" >&2; exit 1; }
   cb="$(curl -sk "$BASE/oauth2/auth/callback" -H 'Content-Type: application/json' \
@@ -69,11 +73,17 @@ admin_token() {
 }
 
 TOKEN="$(admin_token)"
+AUTH_HEADER="$(umask 077; mktemp)"
+trap 'rm -f "$AUTH_HEADER"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOKEN" >"$AUTH_HEADER"
+export TEST_PASSWORD
+# The admin token and request bodies (which hold test passwords) reach curl through a private header
+# file and stdin, not its command line.
 api() {
   local method="$1" path="$2" body="${3:-}" out status
   out="$(mktemp)"
-  status="$(curl -sk -o "$out" -w '%{http_code}' -X "$method" "$BASE$path" -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' ${body:+-d "$body"})"
+  status="$(printf '%s' "$body" | curl -sk -o "$out" -w '%{http_code}' -X "$method" "$BASE$path" -H "@$AUTH_HEADER" \
+    -H 'Content-Type: application/json' ${body:+--data-binary @-})"
   if [ "$status" -ge 300 ]; then echo "$method $path → $status: $(cat "$out")" >&2; rm -f "$out"; return 1; fi
   cat "$out"; rm -f "$out"
 }
@@ -108,8 +118,8 @@ create /user-types "$(jq -nc --arg o "$PARENT_OU" --arg s "$SUFFIX" '{handle:("c
   schema:{username:{type:"string", unique:true}, password:{type:"string", credential:true}, email:{type:"string"},
   given_name:{type:"string"}, family_name:{type:"string"}}}')" >/dev/null
 mkuser() {
-  create /users "$(jq -nc --arg o "$1" --arg u "$2" --arg p "$TEST_PASSWORD" --arg g "$3" --arg s "$SUFFIX" \
-    '{type:("customer-"+$s), ouId:$o, attributes:{username:$u, password:$p, email:($u+"@example.com"), given_name:$g, family_name:"Tester"}}')"
+  create /users "$(jq -nc --arg o "$1" --arg u "$2" --arg g "$3" --arg s "$SUFFIX" \
+    '{type:("customer-"+$s), ouId:$o, attributes:{username:$u, password:env.TEST_PASSWORD, email:($u+"@example.com"), given_name:$g, family_name:"Tester"}}')"
 }
 USER_A="$(mkuser "$ORG_A" "alice-$SUFFIX" Alice)"
 USER_B="$(mkuser "$ORG_B" "bob-$SUFFIX" Bob)"
@@ -151,6 +161,8 @@ M2M="$(api POST /applications "$(jq -nc --arg o "$PARENT_OU" --arg c "$CLIENT_ID
 M2M_ID="$(jq -er .id <<<"$M2M")"
 M2M_SECRET="$(jq -er '.inboundAuthConfig[0].config.clientSecret' <<<"$M2M")"
 
+# Create the file readable by the owner only from the start, not after it has been written.
+umask 077
 cat >"$ENV_FILE" <<EOF
 BASE="$BASE"
 CLIENT_ID="$CLIENT_ID"

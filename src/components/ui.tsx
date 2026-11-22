@@ -5,7 +5,7 @@ export function cx(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(' ')
 }
 
-export function CopyButton({ value, label, className }: { value: string; label?: string; className?: string }) {
+export function CopyButton({ value, label, className, onCopy }: { value: string; label?: string; className?: string; onCopy?: () => void }) {
   const [copied, setCopied] = useState(false)
   return (
     <button
@@ -13,6 +13,7 @@ export function CopyButton({ value, label, className }: { value: string; label?:
       className={cx('btn-ghost px-1.5 py-1 text-xs', className)}
       title="Copy to clipboard"
       onClick={() => {
+        onCopy?.()
         void navigator.clipboard.writeText(value).then(() => {
           setCopied(true)
           setTimeout(() => setCopied(false), 1200)
@@ -136,11 +137,13 @@ function escapeHtml(s: string): string {
 
 export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: T; label: ReactNode }[]; value: T; onChange: (v: T) => void }) {
   return (
-    <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+    <div role="tablist" className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
       {tabs.map((t) => (
         <button
           key={t.id}
           type="button"
+          role="tab"
+          aria-selected={value === t.id}
           onClick={() => onChange(t.id)}
           className={cx(
             '-mb-px border-b-2 px-3 py-2 text-sm font-medium transition',

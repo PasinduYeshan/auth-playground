@@ -91,6 +91,9 @@ export interface Profile {
   responseMode: '' | 'query' | 'fragment' | 'form_post'
   pkceMethod: PkceMethod
   useNonce: boolean
+  /** The server sends iss in authorization responses (RFC 9207), learned from discovery: a response
+   * without it is then rejected. */
+  expectIss: boolean
   prompt: string
   loginHint: string
   maxAge: string
@@ -143,6 +146,7 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
     responseMode: '',
     pkceMethod: 'S256',
     useNonce: true,
+    expectIss: false,
     prompt: '',
     loginHint: '',
     maxAge: '',
@@ -196,6 +200,10 @@ export interface TokenSet {
   tokenEndpoint?: string
   /** ID of the set this one was derived from (refresh, switch). */
   parentId?: string
+  /** The client the set was issued to, when it is not the configuration's own client. */
+  client?: { clientId: string; method: ClientAuthMethod }
+  /** max_age sent on the authorization request, for the auth_time check. */
+  maxAge?: number
   /** Statuses learned from operations (revocation, introspection). */
   revoked?: { access?: number; refresh?: number }
 }

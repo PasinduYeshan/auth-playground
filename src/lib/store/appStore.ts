@@ -4,6 +4,7 @@ import { useRef, useSyncExternalStore } from 'react'
 import type { ReceivedCode } from '../oauth/authorize'
 import type { ProviderMetadata } from '../oauth/discovery'
 import { onExchange, type HttpExchange } from '../oauth/http'
+import { redactExchange } from '../oauth/redact'
 import type { Jwks } from '../oauth/jwt'
 import { newProfile, type Profile, type SessionSecrets, type TokenSet } from '../oauth/types'
 import { loadActiveProfileId, loadProfiles, saveActiveProfileId, saveProfiles } from './profiles'
@@ -15,8 +16,12 @@ export interface AppState {
   profiles: Profile[]
   activeProfileId: string
   secrets: Record<string, SessionSecrets>
+  /** Secrets of other clients used in Other grants, by client ID. Memory only. */
+  otherClientSecrets: Record<string, string>
   metadata: Record<string, ProviderMetadata | undefined>
   jwks: Record<string, Jwks | undefined>
+  /** The URI each cached JWKS was fetched from, to notice a changed JWKS URI. */
+  jwksUri: Record<string, string>
   tokenSets: TokenSet[]
   selectedTokenSetId?: string
   /** Authorization codes received but not redeemed yet. */
@@ -27,7 +32,8 @@ export interface AppState {
 }
 
 // The HTTP log is kept in sessionStorage (like the tokens it may contain) so the code exchange made on
-// the callback page is still visible after returning to the playground.
+// the callback page is still visible after returning to the playground. Client secrets are redacted
+// from the saved copy; the full entries live in memory for this page only.
 const LOG_KEY = 'ap:http-log:v1'
 function loadExchanges(): HttpExchange[] {
   try {
@@ -65,8 +71,10 @@ function initialState(): AppState {
     profiles,
     activeProfileId,
     secrets: {},
+    otherClientSecrets: {},
     metadata: {},
     jwks: {},
+    jwksUri: {},
     tokenSets,
     selectedTokenSetId: tokenSets[0]?.id,
     codes: loadCodes(),
@@ -92,7 +100,8 @@ export function setState(update: Partial<AppState> | ((s: AppState) => Partial<A
   if (patch.codes) sessionStorage.setItem(CODES_KEY, JSON.stringify(next.codes))
   if (patch.exchanges) {
     try {
-      sessionStorage.setItem(LOG_KEY, JSON.stringify(next.exchanges.slice(0, 60)))
+      // Client secrets stay in memory: the saved copy has them redacted.
+      sessionStorage.setItem(LOG_KEY, JSON.stringify(next.exchanges.slice(0, 60).map(redactExchange)))
     } catch {
       // Storage full: the in-memory log still works.
     }

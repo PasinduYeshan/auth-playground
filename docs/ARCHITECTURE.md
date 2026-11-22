@@ -87,13 +87,16 @@ Grants without a redirect (client credentials, device authorization, token excha
 
 ### 3.3 Security model
 
-- **No secrets at rest.** A `Profile` has no secret fields. `sanitizeProfile` drops unknown fields and secret-looking extra parameters on save, import and export. Client secrets live in memory only and are gone on reload.
-- **Tokens** live in `sessionStorage` (this tab only, cleared when it closes) so they survive the redirect. A "Clear" button wipes them.
-- **State, nonce and PKCE verifier** are random per request (Web Crypto), stored under the state value and removed on first use (single use, 30-minute lifetime). The callback refuses a missing or unknown state and checks `iss` (RFC 9207).
-- **ID tokens** are verified against the JWKS (RS, PS, ES and EdDSA) and their claims checked (iss, aud, azp, exp, nbf, iat, nonce, at_hash, c_hash).
+- **No secrets at rest.** A `Profile` has no secret fields. `sanitizeProfile` drops unknown fields, unknown endpoint names and credential-named extra parameters (`isSecretParam`) on save, import and export. Client secrets live in memory only and are gone on reload. The HTTP log saved to `sessionStorage` has client secrets and Basic credentials redacted (`redactExchange`); the full entries stay in memory.
+- **Tokens and unredeemed codes** live in `sessionStorage` (this tab only, cleared when it closes) so they survive the redirect. "Clear all" wipes both.
+- **State, nonce and PKCE verifier** are random per request (Web Crypto), stored under the state value and removed on first use (single use, 30-minute lifetime). The callback refuses a missing or unknown state, checks `iss` (RFC 9207), and requires it when discovery says the server sends it.
+- **ID tokens** are verified against the JWKS (RS, PS, ES and EdDSA; the JWKS is fetched again, at most once a minute, when a token names an unknown key) and their claims checked (iss, aud, azp, sub, exp, nbf, iat, nonce, auth_time when max_age was sent, at_hash, c_hash).
+- **Endpoints** are checked before use: `tracedFetch` sends nothing to a value that is not an absolute http(s) URL, so an empty or half-typed endpoint can never send a token to this site's own host. Views render through error boundaries.
+- **Token sets remember their configuration and client.** Operations use the client that obtained the set, and refuse when its configuration was deleted rather than send it to another server.
+- **Framing**: GitHub Pages cannot send `frame-ancestors` or `X-Frame-Options`, so the app refuses to render inside a frame.
 - **Back-channel calls** use `credentials: 'omit'` and `cache: 'no-store'`.
 - **The page** sends `Referrer-Policy: no-referrer` (meta), so codes in the callback URL do not leak in the Referer header. The callback removes the code from the address bar right away (`history.replaceState`).
-- **Display**: secrets and tokens are masked in the HTTP log unless "Reveal" is on.
+- **Display**: secrets and tokens are masked in the HTTP log unless "Reveal" is on. "Copy as curl" writes `$CLIENT_SECRET` in place of a client secret unless "Reveal" is on.
 - Nothing is sent to any server other than the ones the user configures. No analytics.
 
 ### 3.4 Extensibility toward a backend
@@ -111,14 +114,16 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
 1. Protocol core with unit tests (done first, so the UI sits on tested code).
 2. Configure: profiles, discovery, endpoints, client, request parameters, extra parameters, import and export.
 3. Authorize: live request preview, parameter table, start.
-4. Callback: state and `iss` checks, automatic code exchange, errors explained.
+4. Callback: state and `iss` checks, errors explained; the code is redeemed when the user chooses (or automatically, as a setting).
 5. Tokens: token sets, decoded JWTs, signature and claim checks, refresh, UserInfo, introspection, revocation, logout.
 6. Organizations: org list (manual or a configurable list endpoint), sign-in to an org (interactive or `prompt=none`), token-exchange switch with a configurable subject token, org-scoped code redemption, compare claims between sets.
 7. HTTP log with masking and "copy as curl".
 8. End-to-end test against a local ThunderID with two OUs and a shared public app.
 9. GitHub Pages workflow.
 
-**Later**: CIBA, PAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
+**Done since**: client credentials, device authorization, token exchange, PAR, and the step-by-step code flow.
+
+**Later**: CIBA, JAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
 
 ## 5. ThunderID setup for the playground
 

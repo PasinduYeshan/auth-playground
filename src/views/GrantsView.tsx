@@ -116,9 +116,9 @@ function OutcomeView({ outcome }: { outcome: Outcome }) {
   )
 }
 
-function grantOutcome(profile: Profile, grant: GrantKind, label: string, g: GrantResult, endpoint: string, parentId?: string): Outcome {
+function grantOutcome(profile: Profile, grant: GrantKind, label: string, g: GrantResult, endpoint: string, creds: ClientCredentials, parentId?: string): Outcome {
   if (g.tokens) {
-    const set = storeGrantTokens(profile, grant, label, g.tokens, endpoint, parentId)
+    const set = storeGrantTokens(profile, grant, label, g.tokens, endpoint, creds, parentId)
     return { title: `${label}: tokens issued`, ok: true, exchange: g.exchange, set }
   }
   return {
@@ -145,8 +145,9 @@ function ClientCredentialsTab({ profile, creds, tokenEndpoint }: { profile: Prof
     setBusy(true)
     setError(undefined)
     try {
-      const g = await clientCredentialsGrant({ tokenEndpoint, creds: creds(), scope, resource, audience, extraParams: profile.extraTokenParams })
-      setOutcome(grantOutcome(profile, 'client_credentials', 'Client credentials', g, tokenEndpoint))
+      const c = creds()
+      const g = await clientCredentialsGrant({ tokenEndpoint, creds: c, scope, resource, audience, extraParams: profile.extraTokenParams })
+      setOutcome(grantOutcome(profile, 'client_credentials', 'Client credentials', g, tokenEndpoint, c))
     } catch (e) {
       setError(errText(e))
     } finally {
@@ -256,10 +257,10 @@ function DeviceTab({ profile, creds, tokenEndpoint }: { profile: Profile; creds:
         }
         if (step.kind === 'done') {
           setDevice({ ...state, status: 'done' })
-          setOutcome(grantOutcome(profile, 'device_code', 'Device authorization', g, tokenEndpoint))
+          setOutcome(grantOutcome(profile, 'device_code', 'Device authorization', g, tokenEndpoint, c))
         } else {
           setDevice({ ...state, status: 'stopped', message: step.reason })
-          setOutcome(grantOutcome(profile, 'device_code', 'Device authorization', g, tokenEndpoint))
+          setOutcome(grantOutcome(profile, 'device_code', 'Device authorization', g, tokenEndpoint, c))
         }
         return
       }
@@ -446,9 +447,10 @@ function TokenExchangeTab({ profile, creds, tokenEndpoint }: { profile: Profile;
     setBusy(true)
     setError(undefined)
     try {
+      const c = creds()
       const g = await tokenExchangeGrant({
         tokenEndpoint,
-        creds: creds(),
+        creds: c,
         subjectToken: subject.value,
         subjectTokenType: subject.type,
         actorToken: actor.source === 'none' ? undefined : actor.value,
@@ -460,7 +462,7 @@ function TokenExchangeTab({ profile, creds, tokenEndpoint }: { profile: Profile;
         extraParams: profile.extraTokenParams,
       })
       const parentId = subject.source.includes(':') ? subject.source.split(':')[0] : undefined
-      const o = grantOutcome(profile, 'token_exchange', 'Token exchange', g, tokenEndpoint, parentId)
+      const o = grantOutcome(profile, 'token_exchange', 'Token exchange', g, tokenEndpoint, c, parentId)
       if (g.tokens?.issued_token_type)
         o.detail = (
           <p className="text-sm">

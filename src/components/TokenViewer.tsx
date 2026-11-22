@@ -115,10 +115,13 @@ export interface TokenViewerProps {
   nonce?: string
   accessToken?: string
   code?: string
+  maxAge?: number
+  /** Called once when no JWKS key matches, so the caller can fetch the JWKS again. */
+  onUnknownKid?: () => void
 }
 
 export function TokenViewer(props: TokenViewerProps) {
-  const { token, kind, jwks, issuer, clientId, nonce, accessToken, code } = props
+  const { token, kind, jwks, issuer, clientId, nonce, accessToken, code, maxAge, onUnknownKid } = props
   const decoded = decodeToken(token)
   const [tab, setTab] = useState<'claims' | 'json' | 'raw'>('claims')
   const [signature, setSignature] = useState<SignatureResult>()
@@ -129,9 +132,10 @@ export function TokenViewer(props: TokenViewerProps) {
     const d = decodeToken(token)
     void (async () => {
       const sig = await verifySignature(d, jwks)
+      if (sig.unknownKey && !cancelled) onUnknownKid?.()
       const c =
         kind === 'id'
-          ? await checkIdTokenClaims(d, { issuer, audience: clientId, nonce, accessToken, code })
+          ? await checkIdTokenClaims(d, { issuer, audience: clientId, nonce, accessToken, code, maxAge })
           : kind === 'access'
             ? checkAccessTokenClaims(d, issuer)
             : checkAccessTokenClaims(d, issuer).filter((x) => x.name !== 'aud')
@@ -143,7 +147,9 @@ export function TokenViewer(props: TokenViewerProps) {
     return () => {
       cancelled = true
     }
-  }, [token, kind, jwks, issuer, clientId, nonce, accessToken, code])
+    // onUnknownKid is a fresh closure each render; the JWKS it updates is already a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, kind, jwks, issuer, clientId, nonce, accessToken, code, maxAge])
 
   if (decoded.kind === 'opaque')
     return (

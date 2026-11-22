@@ -34,9 +34,10 @@ Screenshots are from a local ThunderID server with test data.
 ## Security model
 
 - Configurations hold no secrets. Secrets typed for confidential test clients live in memory for the tab only.
-- Tokens and the HTTP log live in `sessionStorage`: this tab only, gone when it closes.
+- Tokens, unredeemed codes and the HTTP log live in `sessionStorage`: this tab only, gone when it closes. The saved log has client secrets redacted, and "copy as curl" writes `$CLIENT_SECRET` in their place unless you reveal secrets.
+- Requests go only to absolute http(s) endpoints, so an incomplete endpoint never sends a token anywhere.
 - State, nonce and the PKCE verifier are random per request and single use.
-- Back-channel calls omit cookies. Pages send no Referer and carry a strict Content-Security-Policy (scripts from this origin only).
+- Back-channel calls omit cookies. Pages send no Referer, carry a strict Content-Security-Policy (scripts from this origin only), and refuse to run inside a frame.
 - Nothing is sent anywhere except the servers you configure. No analytics, no backend.
 
 Use test clients and test users. A browser is not the place for production client secrets.

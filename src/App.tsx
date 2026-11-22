@@ -1,4 +1,4 @@
-import { Activity, ArrowLeftRight, Building2, KeyRound, Moon, PlayCircle, Sun, Workflow } from 'lucide-react'
+import { Activity, ArrowLeftRight, Building2, KeyRound, Moon, PlayCircle, Sun, Workflow, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { cx } from './components/ui'
 import { setState, useAppState, type ViewName } from './lib/store/appStore'
@@ -11,6 +11,7 @@ import { HttpLogView } from './views/HttpLogView'
 import { OrganizationsView } from './views/OrganizationsView'
 import { TokensView, takeLogoutResult } from './views/TokensView'
 import { Alert } from './components/ui'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 const BASE = import.meta.env.BASE_URL
 
@@ -88,7 +89,9 @@ export default function App() {
       <>
         <Header dark={dark} toggle={toggle} />
         <main className="px-4 py-8">
-          <CallbackView home={BASE} />
+          <ErrorBoundary area="callback page">
+            <CallbackView home={BASE} />
+          </ErrorBoundary>
         </main>
       </>
     )
@@ -98,24 +101,32 @@ export default function App() {
       <Header dark={dark} toggle={toggle} />
       <div className="mx-auto grid max-w-[1600px] gap-4 p-4 lg:grid-cols-[380px_minmax(0,1fr)]">
         <aside className="card h-fit overflow-hidden lg:sticky lg:top-18 lg:max-h-[calc(100vh-5.5rem)] lg:overflow-y-auto">
-          <ConfigPanel />
+          <ErrorBoundary area="configuration panel">
+            <ConfigPanel />
+          </ErrorBoundary>
         </aside>
         <main className="min-w-0 space-y-4">
           {logout && (
-            <div onClick={() => setLogout(undefined)} role="presentation">
-              <Alert tone={logout === 'ok' ? 'green' : 'red'}>
-                {logout === 'ok'
-                  ? 'Signed out at the server: the logout response came back with the state that was sent. The tokens in this tab are untouched; revoke them separately if needed.'
-                  : 'A logout response came back with a state that does not match the one sent.'}
-              </Alert>
-            </div>
+            <Alert tone={logout === 'ok' ? 'green' : 'red'}>
+              <div className="flex items-start gap-2">
+                <span className="flex-1">
+                  {logout === 'ok'
+                    ? 'Signed out at the server: the logout response came back with the state that was sent. The tokens in this tab are untouched; revoke them separately if needed.'
+                    : 'A logout response came back with a state that does not match the one sent.'}
+                </span>
+                <button type="button" className="btn-ghost px-1.5 py-0.5 text-xs" onClick={() => setLogout(undefined)} aria-label="Dismiss">
+                  <X size={14} />
+                </button>
+              </div>
+            </Alert>
           )}
-          <nav className="card flex gap-1 overflow-x-auto p-1">
+          <nav className="card flex gap-1 overflow-x-auto p-1" aria-label="Views">
             {NAV.map((n) => (
               <button
                 key={n.id}
                 type="button"
                 onClick={() => setState({ view: n.id })}
+                aria-current={view === n.id ? 'page' : undefined}
                 className={cx(
                   'flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition',
                   view === n.id ? 'bg-indigo-600 text-white' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800',
@@ -128,12 +139,14 @@ export default function App() {
             ))}
           </nav>
           <div className="card p-4 sm:p-5">
-            {view === 'authorize' && <AuthorizeView />}
-            {view === 'grants' && <GrantsView />}
-            {view === 'tokens' && <TokensView />}
-            {view === 'organizations' && <OrganizationsView />}
-            {view === 'compare' && <CompareView />}
-            {view === 'http' && <HttpLogView />}
+            <ErrorBoundary key={view} area={`${NAV.find((n) => n.id === view)?.label ?? 'view'} view`}>
+              {view === 'authorize' && <AuthorizeView />}
+              {view === 'grants' && <GrantsView />}
+              {view === 'tokens' && <TokensView />}
+              {view === 'organizations' && <OrganizationsView />}
+              {view === 'compare' && <CompareView />}
+              {view === 'http' && <HttpLogView />}
+            </ErrorBoundary>
           </div>
         </main>
       </div>

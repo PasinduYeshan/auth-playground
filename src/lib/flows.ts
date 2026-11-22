@@ -1,14 +1,30 @@
 // Orchestration: ties the protocol core to the app store. Views call these; nothing here renders.
 import { buildAuthorizationRequest, checkCallback, parseCallback, prunePending, pushAuthorizationRequest, savePending, takePending, withPushedRequest, type AuthorizationRequest, type BuildOptions, type CallbackCheck, type CallbackParams, type ParResult, type PendingAuthorization, type ReceivedCode } from './oauth/authorize'
 import { exchangeForOrganization, orgEndpoints, orgTokenEndpoint, switchSubjectToken } from './oauth/b2b'
-import { codeExchangeForm, exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
+import { applyClientAuth, codeExchangeForm, exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
 import { discover, fetchJwks } from './oauth/discovery'
+import { encodeForm } from './oauth/http'
 import type { Jwks } from './oauth/jwt'
+import { toCurl } from './oauth/redact'
 import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
-import { activeProfile, addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile } from './store/appStore'
+import { addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile } from './store/appStore'
 
 export function credentialsFor(profile: Profile): ClientCredentials {
   return { clientId: profile.clientId, method: profile.clientAuthMethod, clientSecret: secretsFor(profile.id).clientSecret }
+}
+
+/** The configuration a token set came from. Operations never fall back to another configuration:
+ * its endpoints belong to a different server. */
+export function profileOf(set: TokenSet): Profile {
+  const profile = getState().profiles.find((p) => p.id === set.profileId)
+  if (!profile) throw new Error('The configuration this token set came from was deleted, so its server and client are unknown.')
+  return profile
+}
+
+/** The client a token set was issued to: the configuration's, or the other client used in Other grants. */
+export function credentialsForSet(set: TokenSet, profile: Profile): ClientCredentials {
+  if (!set.client || set.client.clientId === profile.clientId) return credentialsFor(profile)
+  return { clientId: set.client.clientId, method: set.client.method, clientSecret: getState().otherClientSecrets[set.client.clientId] }
 }
 
 export function introspectionCredentialsFor(profile: Profile): ClientCredentials {
@@ -20,13 +36,23 @@ export function introspectionCredentialsFor(profile: Profile): ClientCredentials
   }
 }
 
+/** The issuer to save: the metadata's exact value (tokens carry it byte for byte, trailing slash
+ * included) unless the user typed a different one, which discovery then warns about. */
+export function discoveredIssuer(input: string, metadataIssuer: string): string {
+  const typed = input.trim()
+  if (!typed || typed.includes('/.well-known/')) return metadataIssuer
+  const strip = (v: string) => v.replace(/\/+$/, '')
+  return strip(typed) === strip(metadataIssuer) ? metadataIssuer : strip(typed)
+}
+
 export async function runDiscovery(profile: Profile): Promise<{ error?: string; warnings: string[] }> {
   const result = await discover(profile.issuer)
   if (!result.metadata) return { error: result.error, warnings: [] }
   const m = result.metadata
   setState((s) => ({ metadata: { ...s.metadata, [profile.id]: m } }))
   updateProfile(profile.id, {
-    issuer: profile.issuer.includes('/.well-known/') ? m.issuer : profile.issuer.replace(/\/+$/, '') || m.issuer,
+    issuer: discoveredIssuer(profile.issuer, m.issuer),
+    expectIss: m.authorization_response_iss_parameter_supported === true,
     endpoints: {
       authorization: m.authorization_endpoint ?? '',
       token: m.token_endpoint ?? '',
@@ -43,15 +69,41 @@ export async function runDiscovery(profile: Profile): Promise<{ error?: string; 
   return { warnings: result.warnings }
 }
 
-export async function loadJwks(profileId: string, uri: string): Promise<Jwks | undefined> {
-  if (!uri) return undefined
-  const { jwks } = await fetchJwks(uri)
-  if (jwks) setState((s) => ({ jwks: { ...s.jwks, [profileId]: jwks } }))
-  return jwks
+// One JWKS fetch at a time per configuration: StrictMode and several viewers would otherwise each fetch.
+const jwksInFlight = new Map<string, Promise<Jwks | undefined>>()
+
+export function loadJwks(profileId: string, uri: string): Promise<Jwks | undefined> {
+  if (!uri) return Promise.resolve(undefined)
+  const key = `${profileId} ${uri}`
+  const running = jwksInFlight.get(key)
+  if (running) return running
+  const p = fetchJwks(uri)
+    .then(({ jwks }) => {
+      if (jwks) setState((s) => ({ jwks: { ...s.jwks, [profileId]: jwks }, jwksUri: { ...s.jwksUri, [profileId]: uri } }))
+      return jwks
+    })
+    .finally(() => jwksInFlight.delete(key))
+  jwksInFlight.set(key, p)
+  return p
 }
 
+/** The cached JWKS, fetched again when the configuration's JWKS URI changed since. */
 export async function ensureJwks(profile: Profile): Promise<Jwks | undefined> {
-  return getState().jwks[profile.id] ?? loadJwks(profile.id, profile.endpoints.jwks)
+  const s = getState()
+  if (s.jwks[profile.id] && s.jwksUri[profile.id] === profile.endpoints.jwks) return s.jwks[profile.id]
+  return loadJwks(profile.id, profile.endpoints.jwks)
+}
+
+// Refetch at most once a minute per configuration: a token signed with a key the server never
+// published must not cause a fetch on every render.
+const jwksRefetchedAt = new Map<string, number>()
+
+/** A token names a key the cached JWKS lacks: the server may have rotated its keys, so fetch again. */
+export async function refetchJwksForKid(profile: Profile): Promise<void> {
+  const last = jwksRefetchedAt.get(profile.id) ?? 0
+  if (Date.now() - last < 60_000) return
+  jwksRefetchedAt.set(profile.id, Date.now())
+  await loadJwks(profile.id, profile.endpoints.jwks)
 }
 
 /** Builds the request for a plain or organization sign-in. */
@@ -68,9 +120,15 @@ export function prepareAuthorization(profile: Profile, org?: Organization, extra
   })
 }
 
-export function navigateToAuthorization(pending: PendingAuthorization): void {
+/** Saves the transaction so the callback can complete it, whether the app navigates or the user
+ * opens a copied authorization URL in this browser. */
+export function rememberAuthorization(pending: PendingAuthorization): void {
   prunePending()
   savePending(pending)
+}
+
+export function navigateToAuthorization(pending: PendingAuthorization): void {
+  rememberAuthorization(pending)
   window.location.assign(pending.authorizationUrl)
 }
 
@@ -119,13 +177,14 @@ export function receiveCallback(location: Location): CallbackOutcome {
 /** Redeems a received code at the token endpoint the request named, and stores the token set. */
 export async function redeemCode(received: ReceivedCode): Promise<RedeemOutcome> {
   const { pending, code } = received
-  // Use the live profile for credentials (secrets live in memory), the snapshot for request details.
-  const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
+  // The client the request was made for (the snapshot); its secret, which lives in memory only, comes
+  // from the store.
+  const creds = { ...credentialsFor(pending.profile), clientSecret: secretsFor(pending.profile.id).clientSecret }
   let grant: GrantResult
   try {
     grant = await exchangeCode({
       tokenEndpoint: pending.tokenEndpoint,
-      creds: credentialsFor(profile),
+      creds,
       code,
       redirectUri: pending.profile.redirectUri,
       codeVerifier: pending.codeVerifier,
@@ -147,19 +206,17 @@ export async function redeemCode(received: ReceivedCode): Promise<RedeemOutcome>
     code,
     organization: pending.organization,
     tokenEndpoint: pending.tokenEndpoint,
+    maxAge: pending.profile.maxAge.trim() ? Number(pending.profile.maxAge) : undefined,
   })
   addTokenSet(tokenSet)
   setState({ view: 'tokens' })
   return { grant, tokenSet }
 }
 
-const shellQuote = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
-
 /** The token request for a received code as curl, to redeem it outside the playground. The client
  * secret is left as $CLIENT_SECRET so it never reaches the clipboard. */
 export function codeExchangeCurl(received: ReceivedCode): string {
   const { pending, code } = received
-  const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
   const form = codeExchangeForm({
     code,
     redirectUri: pending.profile.redirectUri,
@@ -167,24 +224,31 @@ export function codeExchangeCurl(received: ReceivedCode): string {
     resources: pending.profile.resources,
     extraParams: pending.profile.extraTokenParams,
   })
-  const parts = ['curl', '-i', '-X', 'POST', '-H', shellQuote('Content-Type: application/x-www-form-urlencoded')]
-  if (profile.clientAuthMethod === 'client_secret_basic') parts.push('-u', `${shellQuote(profile.clientId)}:"$CLIENT_SECRET"`)
-  else form.client_id = profile.clientId
-  for (const [k, v] of Object.entries(form)) if (v) parts.push('--data-urlencode', shellQuote(`${k}=${v}`))
-  if (profile.clientAuthMethod === 'client_secret_post') parts.push('--data-urlencode', '"client_secret=$CLIENT_SECRET"')
-  parts.push(shellQuote(pending.tokenEndpoint))
-  return parts.join(' ')
+  const headers: Record<string, string> = {}
+  // The client the request was made for (the snapshot), with a stand-in secret.
+  applyClientAuth({ clientId: pending.profile.clientId, method: pending.profile.clientAuthMethod, clientSecret: 'x' }, form, headers)
+  const body = encodeForm(form)
+  return toCurl({ method: 'POST', url: pending.tokenEndpoint, headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+}
+
+/** RFC 6749 §6: the server may leave out a new refresh token (the old one stays valid), and OIDC Core
+ * §12.2 lets it leave out the ID token. Keep both from the earlier set unless new ones came back. */
+export function mergeRefreshResponse(previous: TokenResponse, next: TokenResponse): TokenResponse {
+  const carried: TokenResponse = {}
+  if (!next.refresh_token && previous.refresh_token) carried.refresh_token = previous.refresh_token
+  if (!next.id_token && previous.id_token) carried.id_token = previous.id_token
+  return { ...carried, ...next }
 }
 
 export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<GrantResult> {
-  const profile = getState().profiles.find((p) => p.id === set.profileId) ?? activeProfile()
+  const profile = profileOf(set)
   if (!set.response.refresh_token) throw new Error('This token set has no refresh token.')
   // By default refresh at the default token endpoint: some servers' organization token endpoints
   // accept no refresh grant, and the refresh token itself records the organization.
   const tokenEndpoint = profile.b2b.refreshAtOrgTokenEndpoint && set.tokenEndpoint ? set.tokenEndpoint : profile.endpoints.token
   const grant = await refresh({
     tokenEndpoint,
-    creds: credentialsFor(profile),
+    creds: credentialsForSet(set, profile),
     refreshToken: set.response.refresh_token,
     scope: scope || undefined,
     resource: profile.resources[0],
@@ -196,8 +260,11 @@ export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<Gr
         label: `Refreshed: ${set.label}`,
         grant: 'refresh_token',
         profileId: set.profileId,
-        // A refresh response may omit the ID token or a new refresh token; keep the scope it returns.
-        response: grant.tokens,
+        response: mergeRefreshResponse(set.response, grant.tokens),
+        // A carried-over ID token still belongs to the original request's nonce.
+        nonce: grant.tokens.id_token ? undefined : set.nonce,
+        code: grant.tokens.id_token ? undefined : set.code,
+        client: set.client,
         organization: set.organization,
         tokenEndpoint,
         parentId: set.id,
@@ -208,11 +275,11 @@ export async function refreshTokenSet(set: TokenSet, scope?: string): Promise<Gr
 }
 
 export async function switchByTokenExchange(set: TokenSet, org: Organization, scope: string): Promise<GrantResult> {
-  const profile = getState().profiles.find((p) => p.id === set.profileId) ?? activeProfile()
+  const profile = profileOf(set)
   const field = profile.b2b.switchExchange.subjectTokenField
   const subject = switchSubjectToken(profile, set)
   if (!subject) throw new Error(`This token set has no ${field} to exchange.`)
-  const grant = await exchangeForOrganization(profile, org, credentialsFor(profile), subject, scope)
+  const grant = await exchangeForOrganization(profile, org, credentialsForSet(set, profile), subject, scope)
   if (grant.tokens) {
     // Carry a long-lived subject (such as a device secret) over to the new set so switching can go on.
     const carried = field !== 'access_token' && field !== 'id_token' && !grant.tokens[field] ? { [field]: subject } : {}
@@ -225,6 +292,7 @@ export async function switchByTokenExchange(set: TokenSet, org: Organization, sc
         organization: org,
         tokenEndpoint: orgTokenEndpoint(profile, org),
         parentId: set.id,
+        client: set.client,
       }),
     )
   }
@@ -232,8 +300,12 @@ export async function switchByTokenExchange(set: TokenSet, org: Organization, sc
 }
 
 /** Stores a token set from a grant that has no authorization response (client credentials, device, exchange). */
-export function storeGrantTokens(profile: Profile, grant: GrantKind, label: string, response: TokenResponse, tokenEndpoint: string, parentId?: string): TokenSet {
-  const set = newTokenSet({ label, grant, profileId: profile.id, response, tokenEndpoint, parentId })
+export function storeGrantTokens(profile: Profile, grant: GrantKind, label: string, response: TokenResponse, tokenEndpoint: string, creds: ClientCredentials, parentId?: string): TokenSet {
+  const other = creds.clientId !== profile.clientId
+  // Remember another client's secret for this page, so the set can be refreshed or revoked with it.
+  if (other && creds.clientSecret) setState((s) => ({ otherClientSecrets: { ...s.otherClientSecrets, [creds.clientId]: creds.clientSecret! } }))
+  const client = other ? { clientId: creds.clientId, method: creds.method } : undefined
+  const set = newTokenSet({ label, grant, profileId: profile.id, response, tokenEndpoint, parentId, client })
   addTokenSet(set)
   return set
 }

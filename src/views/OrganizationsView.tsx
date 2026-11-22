@@ -112,35 +112,25 @@ function OrgList({ profile, selected, onSelect, current }: { profile: Profile; s
       {orgs.map((o) => (
         <div
           key={o.id}
-          role="button"
-          tabIndex={0}
-          onClick={() => onSelect(o.id)}
-          onKeyDown={(e) => e.key === 'Enter' && onSelect(o.id)}
           className={cx(
-            'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 transition',
+            'flex items-center gap-2 rounded-lg border px-3 py-2 transition',
             selected === o.id ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/40' : 'border-zinc-200 hover:border-zinc-300 dark:border-zinc-800',
           )}
         >
-          <Building2 size={16} className="shrink-0 text-zinc-400" />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-sm font-medium">
-              {o.name}
-              {current?.id === o.id && <Badge tone="green">current</Badge>}
-            </div>
-            <div className="code truncate text-[11px] text-zinc-500">
-              {o.handle ? `${o.handle} · ` : ''}
-              {o.id}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn-ghost px-1.5 hover:text-red-600"
-            title="Remove"
-            onClick={(e) => {
-              e.stopPropagation()
-              setOrgs(orgs.filter((x) => x.id !== o.id))
-            }}
-          >
+          <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-pressed={selected === o.id} onClick={() => onSelect(o.id)}>
+            <Building2 size={16} className="shrink-0 text-zinc-400" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1.5 text-sm font-medium">
+                {o.name}
+                {current?.id === o.id && <Badge tone="green">current</Badge>}
+              </span>
+              <span className="code block truncate text-[11px] text-zinc-500">
+                {o.handle ? `${o.handle} · ` : ''}
+                {o.id}
+              </span>
+            </span>
+          </button>
+          <button type="button" className="btn-ghost px-1.5 hover:text-red-600" title="Remove" aria-label={`Remove ${o.name}`} onClick={() => setOrgs(orgs.filter((x) => x.id !== o.id))}>
             <Trash2 size={14} />
           </button>
         </div>
@@ -222,7 +212,7 @@ export function OrganizationsView() {
           <div className="card space-y-3 p-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-semibold">Organizations</h3>
-              <button type="button" className="btn-secondary text-xs" disabled={!baseSet?.response.access_token || loading} onClick={() => void loadOrgs()} title="Uses the selected token set's access token">
+              <button type="button" className="btn-secondary text-xs" disabled={!baseSet?.response.access_token || !profile.b2b.listTemplate.trim() || loading} onClick={() => void loadOrgs()} title={profile.b2b.listTemplate.trim() ? "Uses the selected token set's access token" : 'Set the organization list endpoint under "How this server handles organizations" first'}>
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />} Load my organizations
               </button>
             </div>

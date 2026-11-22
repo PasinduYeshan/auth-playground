@@ -1,7 +1,8 @@
 // Authorization request (RFC 6749 §4.1, RFC 7636, RFC 8707, OIDC Core) and the callback.
 import { applyClientAuth, type ClientCredentials } from './client'
 import { randomString } from './encoding'
-import { tracedFetch, type HttpExchange } from './http'
+import { oauthErrorOf, tracedFetch, type HttpExchange } from './http'
+import { requireHttpUrl } from './url'
 import { computeCodeChallenge, generateCodeVerifier } from './pkce'
 import type { Organization, Profile } from './types'
 
@@ -48,7 +49,7 @@ export interface BuildOptions {
 
 export async function buildAuthorizationRequest(profile: Profile, opts: BuildOptions = {}): Promise<AuthorizationRequest> {
   const endpoint = opts.authorizationEndpoint ?? profile.endpoints.authorization
-  if (!endpoint) throw new Error('Set the authorization endpoint first.')
+  requireHttpUrl(endpoint, 'authorization endpoint')
   if (!profile.clientId) throw new Error('Set the client ID first.')
   const state = opts.state ?? randomString(24)
   const nonce = profile.useNonce ? (opts.nonce ?? randomString(24)) : undefined
@@ -130,20 +131,12 @@ export async function pushAuthorizationRequest(endpoint: string, params: [string
   const status = exchange.response?.status ?? 0
   if (status >= 200 && status < 300 && typeof body?.request_uri === 'string')
     return { exchange, requestUri: body.request_uri, expiresIn: typeof body.expires_in === 'number' ? body.expires_in : undefined }
-  if (body && typeof body.error === 'string')
-    return { exchange, error: { error: body.error, error_description: body.error_description as string | undefined } }
-  return {
-    exchange,
-    error: {
-      error: exchange.networkError ? 'network_error' : 'unexpected_response',
-      error_description: exchange.networkError ?? `HTTP ${status}`,
-    },
-  }
+  return { exchange, error: oauthErrorOf(exchange) }
 }
 
 /** RFC 9126 §4: the authorization request after a push carries client_id and request_uri only. */
 export function parAuthorizationUrl(authorizationEndpoint: string, clientId: string, requestUri: string): string {
-  const url = new URL(authorizationEndpoint)
+  const url = requireHttpUrl(authorizationEndpoint, 'authorization endpoint')
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('request_uri', requestUri)
   return url.toString()
@@ -240,6 +233,9 @@ export interface CallbackCheck {
 export function checkCallback(cb: CallbackParams, pending: PendingAuthorization | undefined): CallbackCheck {
   const problems: string[] = []
   if (!cb.state) problems.push('The response has no state parameter.')
+  // RFC 9207 §2.4: when the server advertises iss support, a response without iss must be rejected.
+  if (pending && !cb.iss && pending.profile.expectIss)
+    problems.push('The response has no iss parameter, but the server advertises authorization_response_iss_parameter_supported (RFC 9207).')
   else if (!pending) problems.push('No pending request matches this state (expired, already used, or started in another tab).')
   if (pending && cb.iss && pending.profile.issuer && cb.iss.replace(/\/+$/, '') !== pending.profile.issuer.replace(/\/+$/, ''))
     problems.push(`The iss parameter (${cb.iss}) does not match the configured issuer (${pending.profile.issuer}).`)

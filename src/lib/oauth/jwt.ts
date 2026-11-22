@@ -72,6 +72,8 @@ export interface SignatureResult {
   status: 'valid' | 'invalid' | 'unverified'
   detail: string
   kid?: string
+  /** No JWKS key matched: the keys may have rotated since the JWKS was fetched. */
+  unknownKey?: boolean
 }
 
 export function selectKey(jwks: Jwks, header: JsonObject): Jwk | undefined {
@@ -93,7 +95,8 @@ export async function verifySignature(token: DecodedToken, jwks: Jwks | undefine
   const params = algParams(alg)
   if (!params) return { status: 'unverified', detail: `Algorithm ${alg} is not supported by this browser check.` }
   const jwk = selectKey(jwks, token.header)
-  if (!jwk) return { status: 'invalid', detail: `No key in the JWKS matches kid "${String(token.header.kid ?? '')}".` }
+  // Not "invalid": after a key rotation the cached JWKS simply lacks the new key.
+  if (!jwk) return { status: 'unverified', unknownKey: true, detail: `No key in the JWKS matches kid "${String(token.header.kid ?? '')}", even after fetching the JWKS again.` }
   try {
     // Drop JWK members that importKey rejects or that would restrict usage.
     const keyData: JsonWebKey = { ...jwk }
@@ -137,6 +140,8 @@ export interface ClaimExpectations {
   nonce?: string
   accessToken?: string
   code?: string
+  /** max_age sent on the authorization request: auth_time must then be present and recent enough. */
+  maxAge?: number
   /** Seconds of clock skew to tolerate. */
   leeway?: number
   now?: number
@@ -168,7 +173,10 @@ export async function checkIdTokenClaims(token: DecodedToken, exp: ClaimExpectat
     else if (aud.length > 1 && p.azp !== exp.audience)
       checks.push({ name: 'aud', status: 'warn', detail: 'Several audiences and azp is not the client ID.' })
     else checks.push({ name: 'aud', status: 'pass', detail: `Contains the client ID ${exp.audience}.` })
+    // OIDC Core §3.1.3.7: when azp is present it must be the client ID.
+    if (p.azp !== undefined && p.azp !== exp.audience) checks.push({ name: 'azp', status: 'fail', detail: `azp is ${String(p.azp)}, not the client ID ${exp.audience}.` })
   }
+  if (typeof p.sub !== 'string' || !p.sub) checks.push({ name: 'sub', status: 'fail', detail: 'Missing sub.' })
   const expiry = asNumber(p.exp)
   if (expiry === undefined) checks.push({ name: 'exp', status: 'fail', detail: 'Missing exp.' })
   else if (expiry + leeway < now) checks.push({ name: 'exp', status: 'fail', detail: `Expired at ${formatEpoch(expiry)}.` })
@@ -185,6 +193,13 @@ export async function checkIdTokenClaims(token: DecodedToken, exp: ClaimExpectat
         ? { name: 'nonce', status: 'pass', detail: 'Matches the nonce sent in the request.' }
         : { name: 'nonce', status: 'fail', detail: p.nonce === undefined ? 'nonce missing.' : 'nonce does not match the request.' },
     )
+  }
+  if (exp.maxAge !== undefined && !Number.isNaN(exp.maxAge)) {
+    const authTime = asNumber(p.auth_time)
+    if (authTime === undefined) checks.push({ name: 'auth_time', status: 'fail', detail: 'max_age was sent, so auth_time is required (OIDC Core §2).' })
+    else if (authTime + exp.maxAge + leeway < now)
+      checks.push({ name: 'auth_time', status: 'warn', detail: `Authenticated at ${formatEpoch(authTime)}, more than max_age (${exp.maxAge}s) ago.` })
+    else checks.push({ name: 'auth_time', status: 'pass', detail: `Authenticated at ${formatEpoch(authTime)}, within max_age.` })
   }
   const alg = String(token.header.alg ?? '')
   if (exp.accessToken && typeof p.at_hash === 'string') {
@@ -207,7 +222,7 @@ export async function checkIdTokenClaims(token: DecodedToken, exp: ClaimExpectat
 }
 
 /** Lighter checks for JWT access tokens: lifetime and issuer only (the audience is the resource). */
-export function checkAccessTokenClaims(token: DecodedToken, issuer?: string, now = Math.floor(Date.now() / 1000)): ClaimCheck[] {
+export function checkAccessTokenClaims(token: DecodedToken, issuer?: string, now = Math.floor(Date.now() / 1000), leeway = 60): ClaimCheck[] {
   if (token.kind !== 'jwt') return []
   const p = token.payload
   const checks: ClaimCheck[] = []
@@ -220,7 +235,7 @@ export function checkAccessTokenClaims(token: DecodedToken, issuer?: string, now
   const expiry = asNumber(p.exp)
   if (expiry !== undefined)
     checks.push(
-      expiry < now
+      expiry + leeway < now
         ? { name: 'exp', status: 'fail', detail: `Expired at ${formatEpoch(expiry)}.` }
         : { name: 'exp', status: 'pass', detail: `Valid until ${formatEpoch(expiry)}.` },
     )

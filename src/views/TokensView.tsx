@@ -3,12 +3,13 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { HttpExchangeView } from '../components/HttpExchangeView'
 import { TokenViewer, relativeTime } from '../components/TokenViewer'
 import { Alert, Badge, Empty, Field, JsonView, Tabs, cx } from '../components/ui'
-import { credentialsFor, ensureJwks, introspectionCredentialsFor, newTokenSet, refreshTokenSet } from '../lib/flows'
+import { credentialsForSet, ensureJwks, refetchJwksForKid, introspectionCredentialsFor, newTokenSet, refreshTokenSet } from '../lib/flows'
 import { organizationOf } from '../lib/oauth/b2b'
 import { buildEndSessionUrl, callUserInfo, introspect, revoke, type OperationResult, type TokenTypeHint } from '../lib/oauth/client'
 import { randomString } from '../lib/oauth/encoding'
 import type { HttpExchange } from '../lib/oauth/http'
 import { decodeToken } from '../lib/oauth/jwt'
+import { displayUrl, isHttpUrl } from '../lib/oauth/url'
 import type { Profile, TokenSet } from '../lib/oauth/types'
 import { activeProfile, addTokenSet, removeTokenSet, setState, updateTokenSet, useAppState } from '../lib/store/appStore'
 import { clearTokenSets } from '../lib/store/tokens'
@@ -265,7 +266,7 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
               disabled={!tokenFor(hint) || !!op.busy}
               onClick={() =>
                 void op.run('revoke', async () => {
-                  const r = await revoke(profile.endpoints.revocation, credentialsFor(profile), tokenFor(hint)!, hint)
+                  const r = await revoke(profile.endpoints.revocation, credentialsForSet(set, profile), tokenFor(hint)!, hint)
                   if (r.ok) updateTokenSet(set.id, { revoked: { ...set.revoked, [hint === 'refresh_token' ? 'refresh' : 'access']: Date.now() } })
                   // Confirm the outcome: a 200 also answers unknown tokens, so ask introspection.
                   let summary: ReactNode = r.ok ? <Badge tone="green">200: the server accepted the revocation</Badge> : undefined
@@ -292,13 +293,13 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
           <button
             type="button"
             className="btn-secondary w-full"
-            disabled={!profile.endpoints.endSession}
+            disabled={!isHttpUrl(profile.endpoints.endSession)}
             onClick={() => {
               const state = randomString(16)
               sessionStorage.setItem(LOGOUT_STATE_KEY, state)
               const url = buildEndSessionUrl(profile.endpoints.endSession, {
                 idTokenHint: set.response.id_token,
-                clientId: profile.clientId,
+                clientId: set.client?.clientId ?? profile.clientId,
                 postLogoutRedirectUri: `${window.location.origin}${import.meta.env.BASE_URL}`,
                 state,
               })
@@ -326,7 +327,20 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
 }
 
 function TokenSetDetail({ set }: { set: TokenSet }) {
-  const profile = useAppState((s) => s.profiles.find((p) => p.id === set.profileId) ?? activeProfile(s))
+  const profile = useAppState((s) => s.profiles.find((p) => p.id === set.profileId))
+  if (!profile)
+    return (
+      <div className="space-y-3">
+        <Alert tone="amber">
+          The configuration this token set came from was deleted, so its server, client and keys are unknown. The raw response is below; operations and checks are off.
+        </Alert>
+        <JsonView value={set.response} />
+      </div>
+    )
+  return <TokenSetDetailFor set={set} profile={profile} />
+}
+
+function TokenSetDetailFor({ set, profile }: { set: TokenSet; profile: Profile }) {
   const jwks = useAppState((s) => s.jwks[profile.id])
   const available = (['access_token', 'id_token', 'refresh_token'] as TokenKey[]).filter((k) => set.response[k])
   const [tab, setTab] = useState<TokenKey | 'response' | 'operations'>(available[0] ?? 'response')
@@ -354,7 +368,7 @@ function TokenSetDetail({ set }: { set: TokenSet }) {
               </Badge>
             )}
             {set.response.scope && <span className="code">scope: {set.response.scope}</span>}
-            {set.tokenEndpoint && <span className="code">via {new URL(set.tokenEndpoint).pathname}</span>}
+            {set.tokenEndpoint && <span className="code">via {displayUrl(set.tokenEndpoint, 'path')}</span>}
           </div>
         </div>
         <button type="button" className="btn-ghost text-xs hover:text-red-600" onClick={() => removeTokenSet(set.id)}>
@@ -377,7 +391,9 @@ function TokenSetDetail({ set }: { set: TokenSet }) {
           kind={tab === 'access_token' ? 'access' : tab === 'id_token' ? 'id' : 'refresh'}
           jwks={jwks}
           issuer={profile.issuer || undefined}
-          clientId={profile.clientId}
+          clientId={set.client?.clientId ?? profile.clientId}
+          maxAge={set.maxAge}
+          onUnknownKid={() => void refetchJwksForKid(profile)}
           nonce={set.grant === 'authorization_code' ? set.nonce : undefined}
           accessToken={set.response.access_token}
           code={set.code}
@@ -405,9 +421,9 @@ export function TokensView() {
               type="button"
               className="btn-ghost px-1.5 py-0.5 text-xs"
               onClick={() => {
-                if (confirm('Remove every token set from this tab?')) {
+                if (confirm('Remove every token set and unredeemed code from this tab?')) {
                   clearTokenSets()
-                  setState({ tokenSets: [], selectedTokenSetId: undefined })
+                  setState({ tokenSets: [], selectedTokenSetId: undefined, codes: [] })
                 }
               }}
             >

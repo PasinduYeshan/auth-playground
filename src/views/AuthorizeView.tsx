@@ -4,9 +4,10 @@ import { HttpExchangeView } from '../components/HttpExchangeView'
 import { ReceivedCodeCard } from '../components/ReceivedCodeCard'
 import { Alert, Badge, CopyButton } from '../components/ui'
 import { ERROR_HINTS } from '../lib/errors'
-import { navigateToAuthorization, prepareAuthorization, pushAuthorization } from '../lib/flows'
+import { navigateToAuthorization, prepareAuthorization, pushAuthorization, rememberAuthorization } from '../lib/flows'
 import type { AuthorizationRequest, ParResult, PendingAuthorization } from '../lib/oauth/authorize'
 import type { Organization, Profile } from '../lib/oauth/types'
+import { displayUrl, isHttpUrl } from '../lib/oauth/url'
 import { activeProfile, updateProfile, useAppState } from '../lib/store/appStore'
 
 const PARAM_DOCS: Record<string, string> = {
@@ -42,7 +43,9 @@ function useCountdown(window: { pushedAt: number; expiresAt: number } | undefine
 export function profileProblems(profile: Profile): string[] {
   const p: string[] = []
   if (!profile.endpoints.authorization) p.push('Set the authorization endpoint (run discovery).')
+  else if (!isHttpUrl(profile.endpoints.authorization)) p.push('The authorization endpoint is not an absolute http(s) URL.')
   if (!profile.endpoints.token) p.push('Set the token endpoint (run discovery).')
+  else if (!isHttpUrl(profile.endpoints.token)) p.push('The token endpoint is not an absolute http(s) URL.')
   if (!profile.clientId) p.push('Set the client ID.')
   if (!profile.redirectUri) p.push('Set the redirect URI.')
   return p
@@ -60,7 +63,10 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
   // PAR step: the push result, and the transaction to redirect with once the push succeeded.
   const [pushing, setPushing] = useState(false)
   const [par, setPar] = useState<{ result: ParResult; pending?: PendingAuthorization }>()
-  const key = JSON.stringify([profile, org, overrides])
+  // Settings that do not change the request (name, timestamps, the two step toggles) must not
+  // regenerate it: that would throw away a request already pushed with PAR.
+  const { updatedAt: _u, name: _n, usePar: _p, redeemCodeAutomatically: _r, ...requestFields } = profile
+  const key = JSON.stringify([requestFields, org, overrides])
   const remaining = useCountdown(par?.pending?.par)
 
   const regenerate = useCallback(() => {
@@ -127,7 +133,7 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
             <span className="label">Authorization URL</span>
             <div className="flex items-start gap-1">
               <code className="code flex-1 break-all">{req.url}</code>
-              <CopyButton value={req.url} />
+              <CopyButton value={req.url} onCopy={() => rememberAuthorization(req.pending)} />
             </div>
           </div>
         </div>
@@ -164,7 +170,7 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
               {!expired && (
                 <div className="flex items-start gap-1">
                   <code className="code flex-1 break-all">{par.pending.authorizationUrl}</code>
-                  <CopyButton value={par.pending.authorizationUrl} />
+                  <CopyButton value={par.pending.authorizationUrl} onCopy={() => par.pending && rememberAuthorization(par.pending)} />
                 </div>
               )}
             </div>
@@ -186,8 +192,8 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
           <RefreshCw size={14} /> Regenerate
         </button>
         <span className="text-xs text-zinc-500">
-          Goes to <span className="code">{new URL(req.pending.authorizationEndpoint).host + new URL(req.pending.authorizationEndpoint).pathname}</span>; the code is redeemed at{' '}
-          <span className="code">{req.pending.tokenEndpoint ? new URL(req.pending.tokenEndpoint).pathname : '?'}</span>
+          Goes to <span className="code">{displayUrl(req.pending.authorizationEndpoint)}</span>; the code is redeemed at{' '}
+          <span className="code">{displayUrl(req.pending.tokenEndpoint, 'path')}</span>
           {profile.redeemCodeAutomatically ? ' as soon as it arrives.' : ' when you choose.'}
         </span>
       </div>
@@ -254,9 +260,9 @@ export function AuthorizeView() {
       {problems.length === 0 && <RequestPreview profile={profile} />}
       <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
         <Badge tone="green">state</Badge>
-        <Badge tone="green">nonce</Badge>
-        <Badge tone="green">PKCE S256</Badge>
-        <Badge tone="green">iss check (RFC 9207)</Badge>
+        {profile.useNonce ? <Badge tone="green">nonce</Badge> : <Badge tone="amber">no nonce</Badge>}
+        <Badge tone={profile.pkceMethod === 'S256' ? 'green' : 'amber'}>PKCE {profile.pkceMethod}</Badge>
+        <Badge tone={profile.expectIss ? 'green' : 'neutral'}>{profile.expectIss ? 'iss required (RFC 9207)' : 'iss checked when sent (RFC 9207)'}</Badge>
         <span>are generated per request, used once and checked on return.</span>
       </div>
     </div>

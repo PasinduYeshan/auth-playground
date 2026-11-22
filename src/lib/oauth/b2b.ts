@@ -41,6 +41,7 @@ export interface OrgListResult {
 
 /** Reads the user's organizations: a plain array, or an object with organizationUnits, organizations or items. */
 export async function fetchOrganizations(profile: Profile, accessToken: string): Promise<OrgListResult> {
+  if (!profile.b2b.listTemplate.trim()) throw new Error('Set the organization list endpoint first.')
   const url = resolveTemplate(profile.b2b.listTemplate, profile.issuer, '')
   const exchange = await tracedFetch({ label: 'List organizations', url, headers: { Authorization: `Bearer ${accessToken}` } })
   const body = exchange.response?.json as Record<string, unknown> | unknown[] | undefined

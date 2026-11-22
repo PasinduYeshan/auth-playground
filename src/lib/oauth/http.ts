@@ -1,5 +1,7 @@
 // A fetch wrapper that records every exchange (request and response) so the UI can show exactly what
-// went over the wire. Records live in memory only; they are never persisted.
+// went over the wire. The app store keeps the log in memory and saves a copy with client secrets
+// redacted to sessionStorage (see redactExchange).
+import { isHttpUrl } from './url'
 
 export interface HttpRequestRecord {
   method: string
@@ -83,6 +85,12 @@ export async function tracedFetch(req: TracedRequest): Promise<HttpExchange> {
     request: { method, url: req.url, headers, body },
   }
   const started = performance.now()
+  // fetch('') or a relative URL would go to this site's own host: refuse anything but an absolute URL.
+  if (!isHttpUrl(req.url)) {
+    exchange.networkError = `Not sent: "${req.url}" is not an absolute http(s) URL. Check the endpoint in the configuration.`
+    for (const l of listeners) l(exchange)
+    return exchange
+  }
   try {
     // credentials: 'omit' keeps the server's own session cookies out of back-channel calls, which is
     // how a real client behaves and avoids needing Access-Control-Allow-Credentials.
@@ -107,6 +115,22 @@ export async function tracedFetch(req: TracedRequest): Promise<HttpExchange> {
   exchange.durationMs = Math.round(performance.now() - started)
   for (const l of listeners) l(exchange)
   return exchange
+}
+
+export interface OAuthError {
+  error: string
+  error_description?: string
+}
+
+/** The OAuth error of a failed exchange (RFC 6749 §5.2), or a stand-in for network and non-OAuth failures. */
+export function oauthErrorOf(exchange: HttpExchange): OAuthError {
+  const body = exchange.response?.json as Record<string, unknown> | undefined
+  if (body && typeof body.error === 'string')
+    return { error: body.error, error_description: typeof body.error_description === 'string' ? body.error_description : undefined }
+  return {
+    error: exchange.networkError ? 'network_error' : 'unexpected_response',
+    error_description: exchange.networkError ?? `HTTP ${exchange.response?.status ?? 0}`,
+  }
 }
 
 /** Secret-bearing fields and headers, masked in the UI unless the user reveals them. */

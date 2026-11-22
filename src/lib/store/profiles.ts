@@ -7,7 +7,13 @@ import { newProfile, type Profile } from '../oauth/types'
 const KEY = 'ap:profiles:v1'
 const ACTIVE_KEY = 'ap:active-profile'
 
-const SECRET_LIKE = /secret|password|token|verifier|assertion/i
+// Parameter names that carry a credential. Hints and type names (id_token_hint, login_hint_token,
+// subject_token_type, requested_token_type) are not credentials and are kept.
+const SECRET_NAMES = new Set(['access_token', 'refresh_token', 'id_token', 'token', 'subject_token', 'actor_token', 'device_secret', 'device_code', 'code', 'code_verifier', 'client_assertion', 'assertion'])
+export function isSecretParam(name: string): boolean {
+  const n = name.trim().toLowerCase()
+  return SECRET_NAMES.has(n) || /secret|password/.test(n)
+}
 
 export function sanitizeProfile(input: unknown): Profile {
   const base = newProfile()
@@ -16,12 +22,14 @@ export function sanitizeProfile(input: unknown): Profile {
   for (const key of Object.keys(base) as (keyof Profile)[]) {
     if (key in src && typeof src[key] === typeof base[key]) out[key] = src[key]
   }
-  out.endpoints = { ...base.endpoints, ...(typeof src.endpoints === 'object' ? (src.endpoints as object) : {}) }
+  // Known endpoint names with string values only: an imported file cannot add anything else.
+  const endpoints = (src.endpoints && typeof src.endpoints === 'object' ? src.endpoints : {}) as Record<string, unknown>
+  out.endpoints = Object.fromEntries(Object.entries(base.endpoints).map(([k, v]) => [k, typeof endpoints[k] === 'string' ? endpoints[k] : v]))
   // Extra parameters are free-form: drop any whose name looks like a credential.
   for (const listKey of ['extraAuthParams', 'extraTokenParams'] as const) {
     const list = Array.isArray(src[listKey]) ? (src[listKey] as Profile['extraAuthParams']) : []
     out[listKey] = list
-      .filter((p) => p && typeof p.key === 'string' && !SECRET_LIKE.test(p.key))
+      .filter((p) => p && typeof p.key === 'string' && !isSecretParam(p.key))
       .map((p) => ({ key: p.key, value: String(p.value ?? ''), enabled: p.enabled !== false }))
   }
   out.preset = presetById(typeof src.preset === 'string' ? src.preset : undefined).id

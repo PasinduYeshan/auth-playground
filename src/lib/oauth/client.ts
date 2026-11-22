@@ -1,7 +1,8 @@
 // Token endpoint grants and token operations: UserInfo (OIDC Core §5.3), introspection (RFC 7662)
 // and revocation (RFC 7009). Every call goes through tracedFetch so the UI shows it.
-import { tracedFetch, type HttpExchange } from './http'
+import { oauthErrorOf, tracedFetch, type HttpExchange } from './http'
 import type { ClientAuthMethod, KeyValue, TokenResponse } from './types'
+import { requireHttpUrl } from './url'
 
 export interface ClientCredentials {
   clientId: string
@@ -48,15 +49,7 @@ function toGrantResult(exchange: HttpExchange): GrantResult {
   const body = exchange.response?.json as Record<string, unknown> | undefined
   if (exchange.response && exchange.response.status >= 200 && exchange.response.status < 300 && body?.access_token)
     return { exchange, tokens: body as TokenResponse }
-  if (body && typeof body.error === 'string')
-    return { exchange, error: { error: body.error, error_description: body.error_description as string | undefined } }
-  return {
-    exchange,
-    error: {
-      error: exchange.networkError ? 'network_error' : 'unexpected_response',
-      error_description: exchange.networkError ?? `HTTP ${exchange.response?.status}`,
-    },
-  }
+  return { exchange, error: oauthErrorOf(exchange) }
 }
 
 async function tokenRequest(
@@ -172,7 +165,7 @@ export async function revoke(endpoint: string, creds: ClientCredentials, token: 
 }
 
 export function buildEndSessionUrl(endpoint: string, params: { idTokenHint?: string; clientId: string; postLogoutRedirectUri?: string; state?: string }): string {
-  const url = new URL(endpoint)
+  const url = requireHttpUrl(endpoint, 'end session endpoint')
   if (params.idTokenHint) url.searchParams.set('id_token_hint', params.idTokenHint)
   url.searchParams.set('client_id', params.clientId)
   if (params.postLogoutRedirectUri) url.searchParams.set('post_logout_redirect_uri', params.postLogoutRedirectUri)
@@ -289,15 +282,7 @@ export async function requestDeviceAuthorization(input: {
   const body = exchange.response?.json as Record<string, unknown> | undefined
   if (exchange.response && exchange.response.status < 300 && typeof body?.device_code === 'string' && typeof body.user_code === 'string')
     return { exchange, authorization: body as DeviceAuthorization }
-  if (body && typeof body.error === 'string')
-    return { exchange, error: { error: body.error, error_description: body.error_description as string | undefined } }
-  return {
-    exchange,
-    error: {
-      error: exchange.networkError ? 'network_error' : 'unexpected_response',
-      error_description: exchange.networkError ?? `HTTP ${exchange.response?.status}`,
-    },
-  }
+  return { exchange, error: oauthErrorOf(exchange) }
 }
 
 export function pollDeviceToken(tokenEndpoint: string, creds: ClientCredentials, deviceCode: string, extraParams?: KeyValue[]): Promise<GrantResult> {
