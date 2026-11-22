@@ -4,7 +4,7 @@ import { exchangeForOrganization, orgEndpoints, orgTokenEndpoint, switchSubjectT
 import { exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
 import { discover, fetchJwks } from './oauth/discovery'
 import type { Jwks } from './oauth/jwt'
-import type { Organization, Profile, TokenSet } from './oauth/types'
+import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
 import { activeProfile, addTokenSet, getState, secretsFor, setState, updateProfile } from './store/appStore'
 
 export function credentialsFor(profile: Profile): ClientCredentials {
@@ -35,6 +35,7 @@ export async function runDiscovery(profile: Profile): Promise<{ error?: string; 
       revocation: m.revocation_endpoint ?? '',
       jwks: m.jwks_uri ?? '',
       endSession: m.end_session_endpoint ?? '',
+      deviceAuthorization: m.device_authorization_endpoint ?? '',
     },
   })
   if (m.jwks_uri) void loadJwks(profile.id, m.jwks_uri)
@@ -180,4 +181,11 @@ export async function switchByTokenExchange(set: TokenSet, org: Organization, sc
     )
   }
   return grant
+}
+
+/** Stores a token set from a grant that has no authorization response (client credentials, device, exchange). */
+export function storeGrantTokens(profile: Profile, grant: GrantKind, label: string, response: TokenResponse, tokenEndpoint: string, parentId?: string): TokenSet {
+  const set = newTokenSet({ label, grant, profileId: profile.id, response, tokenEndpoint, parentId })
+  addTokenSet(set)
+  return set
 }

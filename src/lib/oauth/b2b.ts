@@ -3,7 +3,7 @@
 // Both are configurable, as are the claims that name the organization in a token. Switching is a new
 // sign-in to the other organization (silent with prompt=none when the session allows it), or a token
 // exchange (RFC 8693) at the organization's token endpoint.
-import { customGrant, type ClientCredentials, type GrantResult } from './client'
+import { customGrant, TOKEN_EXCHANGE_GRANT, type ClientCredentials, type GrantResult } from './client'
 import { tracedFetch, type HttpExchange } from './http'
 import { decodeToken } from './jwt'
 import { genericB2B, type B2BConfig, type OrgClaims, type Organization, type Profile, type TokenSet } from './types'
@@ -55,7 +55,7 @@ export async function fetchOrganizations(profile: Profile, accessToken: string):
   return { exchange, organizations, current: Array.isArray(body) ? undefined : (body.current as string | undefined) }
 }
 
-export const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange'
+export { TOKEN_EXCHANGE_GRANT }
 
 /** The subject token a switch would use, taken from the configured token response field. */
 export function switchSubjectToken(profile: Profile, set: TokenSet): string | undefined {

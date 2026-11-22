@@ -1,4 +1,4 @@
-import { Activity, ArrowLeftRight, Building2, KeyRound, Moon, PlayCircle, Sun } from 'lucide-react'
+import { Activity, ArrowLeftRight, Building2, KeyRound, Moon, PlayCircle, Sun, Workflow } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { cx } from './components/ui'
 import { setState, useAppState, type ViewName } from './lib/store/appStore'
@@ -6,6 +6,7 @@ import { AuthorizeView } from './views/AuthorizeView'
 import { CallbackView } from './views/CallbackView'
 import { CompareView } from './views/CompareView'
 import { ConfigPanel } from './views/ConfigPanel'
+import { GrantsView } from './views/GrantsView'
 import { HttpLogView } from './views/HttpLogView'
 import { OrganizationsView } from './views/OrganizationsView'
 import { TokensView, takeLogoutResult } from './views/TokensView'
@@ -45,6 +46,7 @@ function useTheme(): [boolean, () => void] {
 
 const NAV: { id: ViewName; label: string; icon: ReactNode }[] = [
   { id: 'authorize', label: 'Authorize', icon: <PlayCircle size={16} /> },
+  { id: 'grants', label: 'Other grants', icon: <Workflow size={16} /> },
   { id: 'tokens', label: 'Tokens', icon: <KeyRound size={16} /> },
   { id: 'organizations', label: 'Organizations', icon: <Building2 size={16} /> },
   { id: 'compare', label: 'Compare', icon: <ArrowLeftRight size={16} /> },
@@ -127,6 +129,7 @@ export default function App() {
           </nav>
           <div className="card p-4 sm:p-5">
             {view === 'authorize' && <AuthorizeView />}
+            {view === 'grants' && <GrantsView />}
             {view === 'tokens' && <TokensView />}
             {view === 'organizations' && <OrganizationsView />}
             {view === 'compare' && <CompareView />}

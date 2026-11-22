@@ -11,6 +11,8 @@ export interface Endpoints {
   revocation: string
   jwks: string
   endSession: string
+  /** RFC 8628 device authorization endpoint. */
+  deviceAuthorization: string
 }
 
 export interface KeyValue {
@@ -111,6 +113,7 @@ export const emptyEndpoints = (): Endpoints => ({
   revocation: '',
   jwks: '',
   endSession: '',
+  deviceAuthorization: '',
 })
 
 export function defaultRedirectUri(): string {
@@ -165,7 +168,7 @@ export interface TokenResponse {
   [key: string]: unknown
 }
 
-export type GrantKind = 'authorization_code' | 'refresh_token' | 'token_exchange' | 'manual'
+export type GrantKind = 'authorization_code' | 'refresh_token' | 'client_credentials' | 'device_code' | 'token_exchange' | 'manual'
 
 /** One set of tokens from one grant, the unit the token views compare. */
 export interface TokenSet {

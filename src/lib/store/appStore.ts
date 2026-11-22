@@ -8,7 +8,7 @@ import { newProfile, type Profile, type SessionSecrets, type TokenSet } from '..
 import { loadActiveProfileId, loadProfiles, saveActiveProfileId, saveProfiles } from './profiles'
 import { loadTokenSets, saveTokenSets } from './tokens'
 
-export type ViewName = 'authorize' | 'tokens' | 'organizations' | 'compare' | 'http'
+export type ViewName = 'authorize' | 'grants' | 'tokens' | 'organizations' | 'compare' | 'http'
 
 export interface AppState {
   profiles: Profile[]
@@ -34,7 +34,7 @@ function loadExchanges(): HttpExchange[] {
   }
 }
 
-const VIEWS: ViewName[] = ['authorize', 'tokens', 'organizations', 'compare', 'http']
+const VIEWS: ViewName[] = ['authorize', 'grants', 'tokens', 'organizations', 'compare', 'http']
 function viewFromHash(): ViewName {
   if (typeof window === 'undefined') return 'authorize'
   const h = window.location.hash.replace('#', '') as ViewName

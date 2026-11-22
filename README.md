@@ -12,6 +12,7 @@ Live: <https://auth-playground.yeshandev.com>
 - **Callback checks**: single-use state, `iss` (RFC 9207), automatic code exchange, errors explained in plain words. The code is removed from the address bar at once.
 - **Tokens**: decoded access, ID and refresh tokens; JWKS signature check (RS, PS, ES, EdDSA); ID token checks (iss, aud, azp, exp, nbf, iat, nonce, at_hash, c_hash); claim descriptions and times.
 - **Operations**: refresh, UserInfo (GET or POST), introspection, revocation (confirmed by introspection), RP-initiated logout.
+- **Other grants**: client credentials (with this configuration's client or another, confidential one), device authorization (RFC 8628: user code, verification link, polling with `slow_down` and expiry), and token exchange (RFC 8693: subject and actor tokens picked from any token set or pasted, requested token type, audience, resource, scope). Any of them can target an organization's token endpoint, and the tokens they return get every operation.
 - **Organizations (B2B)**: the organization goes in the endpoint path (`{issuer}/o/{org}/authorize`) or in a request parameter (`organization=...`), with configurable organization claims. Sign in to an organization, redeem at its token endpoint, switch silently with `prompt=none` or by token exchange (RFC 8693), list the user's organizations, and compare claims between any two token sets.
 - **Provider presets**: Generic OAuth 2.0 / OpenID Connect, and ThunderID. A preset fills organization handling, claim names and placeholders, and shows notes about the server. Every value stays editable.
 - **HTTP log**: every request and response, secrets masked unless revealed, copy as curl.
@@ -61,7 +62,7 @@ Choose the **ThunderID** preset and enter the server's base URL (for example `ht
        - "http://localhost:5173"
    ```
 
-2. **Create a browser application**: public client, token endpoint authentication `none`, PKCE required, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch). Redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. For organizations, add `ouId`, `ouName` and `ouHandle` to the access token attributes and share the application with the organizations.
+2. **Create a browser application**: public client, token endpoint authentication `none`, PKCE required, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch, and the device code grant with a device grant flow for device authorization). For client credentials, create a separate `m2m` application with `client_secret_post`. Redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. For organizations, add `ouId`, `ouName` and `ouHandle` to the access token attributes and share the application with the organizations.
 
 `scripts/thunderid-setup.sh` does steps 1 and 2 against a running server. It also creates two organizations and test users:
 
@@ -103,4 +104,4 @@ The app is static. `.github/workflows/deploy.yml` builds and publishes it to Git
 
 ## Roadmap
 
-Client credentials, device authorization, token exchange, CIBA, PAR, DPoP, `private_key_jwt`, more provider presets, shareable configuration links, and an optional self-hosted relay for servers without CORS.
+CIBA, PAR, DPoP, `private_key_jwt`, more provider presets, shareable configuration links, and an optional self-hosted relay for servers without CORS.

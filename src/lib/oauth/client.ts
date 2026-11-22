@@ -174,3 +174,146 @@ export function buildEndSessionUrl(endpoint: string, params: { idTokenHint?: str
   if (params.state) url.searchParams.set('state', params.state)
   return url.toString()
 }
+
+// ---- Client credentials (RFC 6749 §4.4) ----
+
+export interface ClientCredentialsInput {
+  tokenEndpoint: string
+  creds: ClientCredentials
+  scope?: string
+  resource?: string
+  audience?: string
+  extraParams?: KeyValue[]
+}
+
+export async function clientCredentialsGrant(input: ClientCredentialsInput): Promise<GrantResult> {
+  if (input.creds.method === 'none') throw new Error('Client credentials needs a confidential client: choose client_secret_post or client_secret_basic and enter the secret.')
+  return tokenRequest('Token: client_credentials', input.tokenEndpoint, input.creds, {
+    grant_type: 'client_credentials',
+    scope: input.scope || undefined,
+    resource: input.resource || undefined,
+    audience: input.audience || undefined,
+    ...extras(input.extraParams),
+  })
+}
+
+// ---- Token exchange (RFC 8693) ----
+
+export const TOKEN_TYPES = {
+  access_token: 'urn:ietf:params:oauth:token-type:access_token',
+  refresh_token: 'urn:ietf:params:oauth:token-type:refresh_token',
+  id_token: 'urn:ietf:params:oauth:token-type:id_token',
+  jwt: 'urn:ietf:params:oauth:token-type:jwt',
+  saml2: 'urn:ietf:params:oauth:token-type:saml2',
+  id_jag: 'urn:ietf:params:oauth:token-type:id-jag',
+} as const
+
+export const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange'
+
+export interface TokenExchangeInput {
+  tokenEndpoint: string
+  creds: ClientCredentials
+  subjectToken: string
+  subjectTokenType: string
+  actorToken?: string
+  actorTokenType?: string
+  requestedTokenType?: string
+  audience?: string
+  resource?: string
+  scope?: string
+  extraParams?: KeyValue[]
+}
+
+/** Builds the RFC 8693 form; empty optional fields are left out. Exported for tests. */
+export function tokenExchangeForm(input: Omit<TokenExchangeInput, 'tokenEndpoint' | 'creds'>): Record<string, string | undefined> {
+  if (!input.subjectToken.trim()) throw new Error('Enter or pick a subject token.')
+  if (!input.subjectTokenType.trim()) throw new Error('Choose the subject token type.')
+  const actor = input.actorToken?.trim()
+  if (actor && !input.actorTokenType?.trim()) throw new Error('Choose the actor token type.')
+  return {
+    grant_type: TOKEN_EXCHANGE_GRANT,
+    subject_token: input.subjectToken.trim(),
+    subject_token_type: input.subjectTokenType.trim(),
+    actor_token: actor || undefined,
+    actor_token_type: actor ? input.actorTokenType?.trim() : undefined,
+    requested_token_type: input.requestedTokenType?.trim() || undefined,
+    audience: input.audience?.trim() || undefined,
+    resource: input.resource?.trim() || undefined,
+    scope: input.scope?.trim() || undefined,
+    ...extras(input.extraParams),
+  }
+}
+
+export function tokenExchangeGrant(input: TokenExchangeInput): Promise<GrantResult> {
+  const { tokenEndpoint, creds, ...rest } = input
+  return tokenRequest('Token: token_exchange', tokenEndpoint, creds, tokenExchangeForm(rest))
+}
+
+// ---- Device authorization (RFC 8628) ----
+
+export const DEVICE_CODE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
+
+export interface DeviceAuthorization {
+  device_code: string
+  user_code: string
+  verification_uri: string
+  verification_uri_complete?: string
+  expires_in: number
+  interval?: number
+  [key: string]: unknown
+}
+
+export interface DeviceAuthorizationResult {
+  exchange: HttpExchange
+  authorization?: DeviceAuthorization
+  error?: { error: string; error_description?: string }
+}
+
+export async function requestDeviceAuthorization(input: {
+  endpoint: string
+  creds: ClientCredentials
+  scope?: string
+  resource?: string
+  extraParams?: KeyValue[]
+}): Promise<DeviceAuthorizationResult> {
+  if (!input.endpoint) throw new Error('Set the device authorization endpoint first (discovery fills it when the server supports the grant).')
+  const form: Record<string, string | undefined> = { scope: input.scope || undefined, resource: input.resource || undefined, ...extras(input.extraParams) }
+  const headers: Record<string, string> = {}
+  applyClientAuth(input.creds, form, headers)
+  const exchange = await tracedFetch({ label: 'Device authorization', url: input.endpoint, form, headers })
+  const body = exchange.response?.json as Record<string, unknown> | undefined
+  if (exchange.response && exchange.response.status < 300 && typeof body?.device_code === 'string' && typeof body.user_code === 'string')
+    return { exchange, authorization: body as DeviceAuthorization }
+  if (body && typeof body.error === 'string')
+    return { exchange, error: { error: body.error, error_description: body.error_description as string | undefined } }
+  return {
+    exchange,
+    error: {
+      error: exchange.networkError ? 'network_error' : 'unexpected_response',
+      error_description: exchange.networkError ?? `HTTP ${exchange.response?.status}`,
+    },
+  }
+}
+
+export function pollDeviceToken(tokenEndpoint: string, creds: ClientCredentials, deviceCode: string, extraParams?: KeyValue[]): Promise<GrantResult> {
+  return tokenRequest('Token: device_code', tokenEndpoint, creds, { grant_type: DEVICE_CODE_GRANT, device_code: deviceCode, ...extras(extraParams) })
+}
+
+/** What a poll response means for the polling loop (RFC 8628 §3.5). */
+export type PollStep = { kind: 'done' } | { kind: 'wait'; interval: number } | { kind: 'stop'; reason: string }
+
+export function nextPollStep(result: GrantResult, interval: number): PollStep {
+  if (result.tokens) return { kind: 'done' }
+  switch (result.error?.error) {
+    case 'authorization_pending':
+      return { kind: 'wait', interval }
+    case 'slow_down':
+      return { kind: 'wait', interval: interval + 5 }
+    case 'access_denied':
+      return { kind: 'stop', reason: 'The user denied the request.' }
+    case 'expired_token':
+      return { kind: 'stop', reason: 'The device code expired before the user approved it.' }
+    default:
+      return { kind: 'stop', reason: result.error?.error_description || result.error?.error || 'Unexpected response.' }
+  }
+}

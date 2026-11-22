@@ -77,10 +77,10 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
 src/lib/store/      profiles (localStorage), token sets (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls
-src/views/          Configure, Authorize, Callback, Tokens, Organizations, Compare, HTTP log
+src/views/          Configure, Authorize, Callback, Other grants, Tokens, Organizations, Compare, HTTP log
 ```
 
-Each future grant (client credentials, device authorization, token exchange, CIBA) is one module in `lib/oauth` built on `tracedFetch` and `applyClientAuth`, plus one view. Nothing else changes.
+Grants without a redirect (client credentials, device authorization, token exchange) are functions in `lib/oauth/client.ts` built on `tracedFetch` and `applyClientAuth`, shown in the Other grants view; their tokens become ordinary token sets. Future grants (CIBA) follow the same pattern.
 
 ### 3.3 Security model
 
@@ -115,7 +115,7 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
 8. End-to-end test against a local ThunderID with two OUs and a shared public app.
 9. GitHub Pages workflow.
 
-**Later**: client credentials, device authorization, token exchange, CIBA, PAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
+**Later**: CIBA, PAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
 
 ## 5. ThunderID setup for the playground
 
@@ -130,7 +130,7 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
        - "http://localhost:5173"
    ```
 
-2. Create a browser application: public client, `tokenEndpointAuthMethod: none`, `pkceRequired: true`, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch), redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. Add `ouId`, `ouName`, `ouHandle` to the access token attributes for B2B, and map scopes to claims (`scopeClaims`) so UserInfo returns more than `sub`.
+2. Create a browser application: public client, `tokenEndpointAuthMethod: none`, `pkceRequired: true`, grants `authorization_code` and `refresh_token` (add token exchange for the device-secret switch; add the device code grant with a device grant flow, `deviceGrantFlowId`, whose authentication call matches the app's `authFlowId`), redirect URI `https://auth-playground.yeshandev.com/callback`, post-logout redirect URI `https://auth-playground.yeshandev.com/`. Add `ouId`, `ouName`, `ouHandle` to the access token attributes for B2B, and map scopes to claims (`scopeClaims`) so UserInfo returns more than `sub`.
 3. For B2B, share the application with the child OUs (`POST /applications/{id}/sharing-policies {"childUnits":{"mode":"all"}}`; a `sharingPolicies` field in the create request is ignored).
 
 `scripts/thunderid-setup.sh` does all of this against a local server.
@@ -156,3 +156,6 @@ End to end against ThunderID `main` (051a92c76), in a browser, with the producti
 | Compare claims between organizations | `ouId`, `ouName`, `ouHandle`, `grant_type`, `scope` differ |
 | Silent switch (`prompt=none`) with an SSO session | Code issued with no screen |
 | RP-initiated logout, then silent switch | Logout state matched; then `login_required` |
+| Client credentials with a confidential (`m2m`) client, `client_secret_post` | 200, access token for the client |
+| Token exchange: client credentials access token as subject | 200, `issued_token_type` access token |
+| Device authorization at `/oauth2/device-authorize`, user code approved at `/gate/device`, polling | `authorization_pending` while waiting, then 200 with access, ID and refresh tokens; signature verified |

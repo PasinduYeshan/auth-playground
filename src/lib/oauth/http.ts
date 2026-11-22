@@ -122,6 +122,8 @@ export const SENSITIVE_FIELDS = [
   'actor_token',
   'client_assertion',
   'assertion',
+  'device_code',
+  'device_secret',
 ]
 
 export function maskValue(value: string): string {
