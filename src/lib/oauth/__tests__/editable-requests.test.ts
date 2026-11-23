@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { draftCurl } from '../../flows'
 import { buildAuthorizationRequest, callbackFromRaw, carryDraft, jsonToParams, paramsToJson, withParams } from '../authorize'
 import { templateIssuer } from '../b2b'
+import { serverPatch } from '../presets'
 import { newProfile } from '../types'
 
 const profile = newProfile({
@@ -75,5 +76,33 @@ describe('organization endpoint templates', () => {
     expect(templateIssuer({ ...profile, issuer: 'https://idp.example/t/a' })).toBe('https://idp.example/t/a')
     expect(templateIssuer({ ...profile, issuer: '' })).toBe('https://idp.example')
     expect(() => templateIssuer(newProfile())).toThrow(/issuer/)
+  })
+})
+
+describe('endpoints filled from the base URL', () => {
+  const blank = newProfile({ preset: 'thunderid' })
+
+  it('fills the preset paths from the base URL, and the default base URL on choosing the preset', () => {
+    const p = { ...blank, ...serverPatch(blank, { issuer: 'http://localhost:9190/' }) }
+    expect(p.endpoints.authorization).toBe('http://localhost:9190/oauth2/authorize')
+    expect(p.endpoints.token).toBe('http://localhost:9190/oauth2/token')
+    const chosen = serverPatch(newProfile(), { preset: 'thunderid' })
+    expect(chosen.issuer).toBe('https://localhost:8090')
+    expect(chosen.endpoints?.jwks).toBe('https://localhost:8090/oauth2/jwks')
+  })
+
+  it('follows a new base URL but keeps endpoints the user changed', () => {
+    const a = { ...blank, ...serverPatch(blank, { issuer: 'http://a.example' }) }
+    const edited = { ...a, endpoints: { ...a.endpoints, token: 'http://proxy.example/token' } }
+    const b = serverPatch(edited, { issuer: 'http://b.example' })
+    expect(b.endpoints?.authorization).toBe('http://b.example/oauth2/authorize')
+    expect(b.endpoints?.token).toBe('http://proxy.example/token')
+  })
+
+  it('fills nothing for an incomplete URL or a preset without known paths', () => {
+    expect(serverPatch(blank, { issuer: 'http://' }).endpoints?.authorization).toBe('')
+    expect(serverPatch(newProfile(), { issuer: 'https://idp.example' }).endpoints?.authorization).toBe('')
+    const filled = { ...blank, ...serverPatch(blank, { issuer: 'http://a.example' }) }
+    expect(serverPatch(filled, { preset: 'generic' }).endpoints?.authorization).toBe('')
   })
 })

@@ -74,7 +74,7 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   client.ts         token grants, client authentication, UserInfo, introspection, revocation, logout URL
   jwt.ts            decode, Web Crypto signature check, ID token and access token claim checks
   b2b.ts            organization endpoints (path templates or a parameter), org claims, token-exchange switch, claim diff
-  presets.ts        provider presets: defaults and notes only, no protocol code
+  presets.ts        provider presets: defaults, notes and known endpoint paths, no protocol code
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
 src/lib/store/      profiles (localStorage), token sets and unredeemed codes (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls

@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { KeyValueEditor } from '../components/KeyValueEditor'
 import { Alert, Badge, Field, SecretInput, Section, cx } from '../components/ui'
 import { runDiscovery } from '../lib/flows'
-import { PRESETS, presetById } from '../lib/oauth/presets'
+import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
 import { defaultRedirectUri, newProfile, type ClientAuthMethod, type Endpoints, type Profile } from '../lib/oauth/types'
 import { activeProfile, addProfile, addProfiles, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
 import { MAX_IMPORT_BYTES, exportFileName, exportProfiles, parseConfigFile } from '../lib/store/profiles'
@@ -207,7 +207,7 @@ export function ConfigPanel() {
             value={preset.id}
             onChange={(e) => {
               const next = presetById(e.target.value)
-              up({ preset: next.id, b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
+              up({ ...serverPatch(profile, { preset: next.id }), b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
             }}
           >
             {PRESETS.map((p) => (
@@ -223,7 +223,7 @@ export function ConfigPanel() {
               className="input code"
               value={profile.issuer}
               placeholder={preset.issuerPlaceholder}
-              onChange={(e) => up({ issuer: e.target.value })}
+              onChange={(e) => up(serverPatch(profile, { issuer: e.target.value }))}
               onKeyDown={(e) => e.key === 'Enter' && void doDiscover()}
             />
             <button type="button" className="btn-primary shrink-0" onClick={() => void doDiscover()} disabled={!profile.issuer || discovering}>
@@ -243,16 +243,19 @@ export function ConfigPanel() {
             </ul>
           </details>
         )}
-        <details className="group">
-          <summary className="cursor-pointer text-xs font-medium text-zinc-600 select-none dark:text-zinc-400">Endpoints</summary>
-          <div className="mt-2 space-y-2">
-            {ENDPOINT_LABELS.map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input className="input code" value={profile.endpoints[key]} onChange={(e) => up({ endpoints: { ...profile.endpoints, [key]: e.target.value } })} />
-              </Field>
-            ))}
+        <div className="space-y-2 pt-1">
+          <div className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            Endpoints{' '}
+            <span className="font-normal text-zinc-500">
+              {metadata ? '(from discovery)' : preset.endpointPaths ? `(filled from the base URL with ${preset.name} paths)` : '(press Discover, or enter them)'}
+            </span>
           </div>
-        </details>
+          {ENDPOINT_LABELS.map(([key, label]) => (
+            <Field key={key} label={label}>
+              <input className="input code" value={profile.endpoints[key]} spellCheck={false} onChange={(e) => up({ endpoints: { ...profile.endpoints, [key]: e.target.value } })} />
+            </Field>
+          ))}
+        </div>
       </Section>
 
       <Section title="Client">
@@ -356,13 +359,13 @@ export function ConfigPanel() {
         </Field>
       </Section>
 
-      <Section title="Token request" defaultOpen={false}>
+      <Section title="Token request">
         <Field label="Extra token request parameters">
           <KeyValueEditor value={profile.extraTokenParams} onChange={(v) => up({ extraTokenParams: v })} />
         </Field>
       </Section>
 
-      <Section title="Introspection client" defaultOpen={false} subtitle="optional">
+      <Section title="Introspection client" subtitle="optional">
         <p className="text-xs text-zinc-500">Leave empty to introspect with the client above. Some servers accept public clients; others need a confidential one.</p>
         <Field label="Client ID">
           <input className="input code" value={profile.introspectionClientId} onChange={(e) => up({ introspectionClientId: e.target.value })} />

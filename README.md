@@ -17,7 +17,7 @@ Live: <https://auth-playground.yeshandev.com>
 - **Organizations (B2B)**: the organization goes in the endpoint path (`{issuer}/o/{org}/authorize`) or in a request parameter (`organization=...`), with configurable organization claims. Sign in to an organization, redeem at its token endpoint, switch silently with `prompt=none` or by token exchange (RFC 8693), list the user's organizations, and compare claims between any two token sets.
 - **Provider presets**: Generic OAuth 2.0 / OpenID Connect, and ThunderID. A preset fills organization handling, claim names and placeholders, and shows notes about the server. Every value stays editable.
 - **HTTP log**: every request and response, secrets masked unless revealed, copy as curl.
-- **First-run setup**: a new configuration asks for the issuer URL and client ID only; everything else comes from discovery. Switch configurations from the header; the full configuration is under Server settings.
+- **First-run setup**: a new configuration asks for the issuer URL and client ID only; everything else comes from discovery. A preset that knows its server's paths (ThunderID) fills the base URL and the endpoints from it, so it works without discovery too; endpoints you change stay when the base URL changes. Switch configurations from the header; the full configuration, with every section open, is under Server settings.
 - **Saved configurations** in `localStorage`. Export one or all of them to a `.json` file, and import by choosing a file or dropping it on Server settings. Client secrets are never saved or exported.
 
 ## Screenshots

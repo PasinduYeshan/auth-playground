@@ -2,7 +2,7 @@ import { CheckCircle2, Loader2, Radar } from 'lucide-react'
 import { useState } from 'react'
 import { Alert, CopyButton, SecretInput, cx } from '../components/ui'
 import { runDiscovery } from '../lib/flows'
-import { PRESETS, presetById } from '../lib/oauth/presets'
+import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
 import type { ClientAuthMethod, Endpoints, Profile } from '../lib/oauth/types'
 import { displayUrl } from '../lib/oauth/url'
 import { secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
@@ -48,6 +48,11 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
   const problems = profileProblems(profile)
   const ready = problems.length === 0 && (profile.clientAuthMethod === 'none' || !!secret)
 
+  // A configuration still on its default name is named after its server.
+  const nameAfterServer = () => {
+    if (DEFAULT_NAMES.includes(profile.name) && profile.issuer.trim()) up({ name: `${preset.id === 'generic' ? 'Server' : preset.name} · ${displayUrl(profile.issuer).replace(/\/+$/, '')}` })
+  }
+
   const discover = async () => {
     if (!profile.issuer.trim()) return
     setBusy(true)
@@ -57,7 +62,7 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
       if (r.error) setMsg({ tone: 'red', text: `Discovery failed: ${r.error}. The HTTP log has the details.` })
       else {
         if (r.warnings.length) setMsg({ tone: 'amber', text: r.warnings.join(' ') })
-        if (DEFAULT_NAMES.includes(profile.name)) up({ name: `${preset.id === 'generic' ? 'Server' : preset.name} · ${displayUrl(profile.issuer).replace(/\/+$/, '')}` })
+        nameAfterServer()
       }
     } catch (e) {
       setMsg({ tone: 'red', text: e instanceof Error ? e.message : String(e) })
@@ -82,7 +87,7 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
               value={preset.id}
               onChange={(e) => {
                 const next = presetById(e.target.value)
-                up({ preset: next.id, b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
+                up({ ...serverPatch(profile, { preset: next.id }), b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
               }}
             >
               {PRESETS.map((p) => (
@@ -104,7 +109,7 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
                 placeholder={preset.issuerPlaceholder}
                 autoFocus={!profile.issuer}
                 spellCheck={false}
-                onChange={(e) => up({ issuer: e.target.value })}
+                onChange={(e) => up(serverPatch(profile, { issuer: e.target.value }))}
                 onKeyDown={(e) => e.key === 'Enter' && void discover()}
               />
               <button type="button" className="btn-primary h-10 shrink-0 px-4" disabled={!profile.issuer.trim() || busy} onClick={() => void discover()}>
@@ -117,7 +122,7 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
         {msg && <Alert tone={msg.tone}>{msg.text}</Alert>}
         {serverDone && (
           <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
-            <span className="mr-1 font-semibold">{discovered ? 'Discovered:' : 'Endpoints set:'}</span>
+            <span className="mr-1 font-semibold">{discovered ? 'Discovered:' : preset.endpointPaths ? `Filled from the ${preset.name} base URL:` : 'Endpoints set:'}</span>
             {FOUND.filter(([k]) => profile.endpoints[k]).map(([k, label]) => (
               <span key={k} className="rounded-full border border-emerald-200 bg-white px-2 py-0.5 dark:border-emerald-800 dark:bg-emerald-950">
                 {label}
@@ -161,7 +166,11 @@ export function SetupView({ profile, onDone }: { profile: Profile; onDone: () =>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <button type="button" className="btn-primary h-10 px-5 font-semibold" disabled={!ready} onClick={onDone}>
+          <button type="button" className="btn-primary h-10 px-5 font-semibold" disabled={!ready}
+            onClick={() => {
+              nameAfterServer()
+              onDone()
+            }}>
             Start testing
           </button>
           {!ready && (
