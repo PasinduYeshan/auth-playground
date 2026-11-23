@@ -78,10 +78,15 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
 src/lib/store/      profiles (localStorage), token sets and unredeemed codes (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls
-src/views/          Configure, Authorize, Callback, Other grants, Tokens, Organizations, Compare, HTTP log
+src/views/          Setup, Server settings (ConfigPanel), Authorize, Callback, Other grants, Tokens, Organizations, Compare, HTTP log
+src/lib/handoff.ts  hands an authorization response from the sign-in tab to the playground tab (BroadcastChannel)
 ```
 
-The authorization code flow runs as separate steps, each started by the user: build the request (regenerate at will), push it to the PAR endpoint when the configuration asks for PAR (the browser then carries only `client_id` and `request_uri`), sign in, then check the response on the callback page. The checked code is kept in `sessionStorage` until the user redeems it, copies the token request as curl (the client secret left as `$CLIENT_SECRET`), or discards it; it is removed once a redemption is attempted, since a code is single use. "Redeem the code automatically" restores the one-step behaviour.
+The authorization code flow runs as separate steps, each started by the user: edit the request (JSON; state, nonce and the PKCE challenge are generated and refreshed after each sign-in, values the user typed stay), push it to the PAR endpoint when the configuration asks for PAR (the browser then carries only `client_id` and `request_uri`), sign in, then redeem the code. Everything after the sign-in shows in the playground tab's Sign-ins list.
+
+Sign-in runs in a new tab so the playground keeps its state and several sign-ins can run at once. The tab is opened from the click (so pop-up blockers allow it) with `opener` cleared, so the sign-in page has no handle on the playground. The transaction (state, nonce, verifier) stays in the playground tab's `sessionStorage`. The callback page offers only the response parameters on a same-origin `BroadcastChannel`; the playground tab that holds the matching state takes it, checks it and answers, and the callback tab closes. If no tab answers within 1.5 s, the callback page completes the response itself when it holds the transaction (pop-ups blocked and the sign-in ran in the same tab, or a copied URL opened there) and returns to the playground; otherwise it says no tab is waiting.
+
+The checked code is kept in `sessionStorage` until the user redeems it, copies the token request as curl (the client secret left as `$CLIENT_SECRET`), or discards it. Redeeming opens the token request editor: the exact URL, form fields and headers, all editable, sent as edited. A failed redemption leaves the code available so the request can be sent again (to see how the server treats a reused code); a successful one removes it. "Redeem the code automatically" restores the one-step behaviour.
 
 Grants without a redirect (client credentials, device authorization, token exchange) are functions in `lib/oauth/client.ts` built on `tracedFetch` and `applyClientAuth`, shown in the Other grants view; their tokens become ordinary token sets. Future grants (CIBA) follow the same pattern.
 
@@ -113,15 +118,15 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
 
 1. Protocol core with unit tests (done first, so the UI sits on tested code).
 2. Configure: profiles, discovery, endpoints, client, request parameters, extra parameters, import and export.
-3. Authorize: live request preview, parameter table, start.
-4. Callback: state and `iss` checks, errors explained; the code is redeemed when the user chooses (or automatically, as a setting).
+3. Authorize: live request preview, editable, sign-in in a new tab.
+4. Callback: hands the response to the playground tab; state and `iss` checks, errors explained; the code is redeemed when the user chooses, with the token request editable (or automatically, as a setting).
 5. Tokens: token sets, decoded JWTs, signature and claim checks, refresh, UserInfo, introspection, revocation, logout.
 6. Organizations: org list (manual or a configurable list endpoint), sign-in to an org (interactive or `prompt=none`), token-exchange switch with a configurable subject token, org-scoped code redemption, compare claims between sets.
 7. HTTP log with masking and "copy as curl".
 8. End-to-end test against a local ThunderID with two OUs and a shared public app.
 9. GitHub Pages workflow.
 
-**Done since**: client credentials, device authorization, token exchange, PAR, and the step-by-step code flow.
+**Done since**: client credentials, device authorization, token exchange, PAR, the step-by-step code flow, sign-in in a new tab with the response handed back, editable authorization and token requests, and a first-run setup screen.
 
 **Later**: CIBA, JAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
 
@@ -159,7 +164,7 @@ End to end against ThunderID `main` (051a92c76), in a browser, with the producti
 | Introspection with the public client | `active: true` |
 | Refresh at the organization endpoint | Refused by the server (see above); fixed to use `/oauth2/token`, then 200 and the organization kept |
 | Revocation, then introspection | 200, then `active: false` |
-| `GET /users/me/ous` | Lists the user's organizations, marks the current one |
+| `GET /users/me/ous` | Lists the user's organizations, marks the current one. On a later server build, a token from an organization sign-in got 401; the 401 carries no CORS headers, so the browser reports a network error |
 | Device-secret switch to another organization | 200, new tokens for that organization |
 | Compare claims between organizations | `ouId`, `ouName`, `ouHandle`, `grant_type`, `scope` differ |
 | Silent switch (`prompt=none`) with an SSO session | Code issued with no screen |
@@ -168,7 +173,12 @@ End to end against ThunderID `main` (051a92c76), in a browser, with the producti
 | Token exchange: client credentials access token as subject | 200, `issued_token_type` access token |
 | PAR at `/oauth2/par` with the public client, then sign-in with `client_id` and `request_uri` only | 201 with `request_uri` (60 s); the server resolved it and showed its sign-in page |
 | PAR, then sign-in to an organization at `/ou/{id}/oauth2/authorize` | Code issued; redeemed at the organization's token endpoint, `ouName` names the organization |
-| Code kept on the callback page, redeemed later from Authorize | 200, token set stored |
+| Response handed from another tab to the playground tab (plain and PAR) | Taken by the tab holding the state; state and `iss` matched; the callback tab closed itself |
+| Pop-up blocked: sign-in in the same tab | The callback page completed the response and returned to the playground |
+| Callback with a state no tab holds | "No playground tab is waiting", the code masked and removed from the address bar |
+| Token request edited (an extra form field) and sent | 200, token set stored; ID token signature, `iss`, `aud` and `nonce` checks pass |
+| The same code sent again | 400 `invalid_grant`; the sign-in stays marked as issued |
+| Edited authorization request (scope, `ui_locales`) | The URL carries the edited values; code issued |
 | Token request copied as curl, run from a shell | 200 with tokens |
 | Automatic redemption, and the plain flow with PAR off | 200 in both |
 | Device authorization at `/oauth2/device-authorize`, user code approved at `/gate/device`, polling | `authorization_pending` while waiting, then 200 with access, ID and refresh tokens; signature verified |

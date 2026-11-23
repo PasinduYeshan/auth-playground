@@ -48,6 +48,7 @@ export const PRESETS: ProviderPreset[] = [
       'PKCE S256 and response_mode query only.',
       'Organizations are organization units (OUs), selected by ID in the path. Share the application with them and add ouId, ouName and ouHandle to its access token attributes.',
       'The device_sso scope returns a device_secret, which switches organization by token exchange.',
+      'Its API error responses (such as a 401 from /users/me/ous) carry no CORS headers, so the browser reports a refused request as a network error. The server log shows the real status.',
     ],
     extraScopes: ['device_sso'],
   },

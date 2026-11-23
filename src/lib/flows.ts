@@ -1,13 +1,15 @@
 // Orchestration: ties the protocol core to the app store. Views call these; nothing here renders.
-import { buildAuthorizationRequest, checkCallback, parseCallback, prunePending, pushAuthorizationRequest, savePending, takePending, withPushedRequest, type AuthorizationRequest, type BuildOptions, type CallbackCheck, type CallbackParams, type ParResult, type PendingAuthorization, type ReceivedCode } from './oauth/authorize'
+import { buildAuthorizationRequest, callbackFromRaw, checkCallback, hasPending, parseCallback, prunePending, pushAuthorizationRequest, savePending, takePending, withPushedRequest, type AuthorizationRequest, type BuildOptions, type CallbackCheck, type CallbackParams, type ParResult, type PendingAuthorization, type ReceivedCode } from './oauth/authorize'
 import { exchangeForOrganization, orgEndpoints, orgTokenEndpoint, switchSubjectToken } from './oauth/b2b'
-import { applyClientAuth, codeExchangeForm, exchangeCode, refresh, type ClientCredentials, type GrantResult } from './oauth/client'
+import { applyClientAuth, codeExchangeForm, refresh, toGrantResult, type ClientCredentials, type GrantResult } from './oauth/client'
 import { discover, fetchJwks } from './oauth/discovery'
-import { encodeForm } from './oauth/http'
+import { encodeForm, tracedFetch } from './oauth/http'
+import { requireHttpUrl } from './oauth/url'
+import { listenForResponses } from './handoff'
 import type { Jwks } from './oauth/jwt'
 import { toCurl } from './oauth/redact'
 import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
-import { addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile } from './store/appStore'
+import { addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile, updateSignIn, upsertSignIn } from './store/appStore'
 
 export function credentialsFor(profile: Profile): ClientCredentials {
   return { clientId: profile.clientId, method: profile.clientAuthMethod, clientSecret: secretsFor(profile.id).clientSecret }
@@ -127,9 +129,18 @@ export function rememberAuthorization(pending: PendingAuthorization): void {
   savePending(pending)
 }
 
-export function navigateToAuthorization(pending: PendingAuthorization): void {
+/** Records a sign-in about to start (or a copied URL about to be opened) so its response is
+ * accepted in this tab and shown in the Sign-ins list. */
+export function startSignIn(pending: PendingAuthorization): void {
   rememberAuthorization(pending)
-  window.location.assign(pending.authorizationUrl)
+  upsertSignIn({
+    id: pending.state,
+    label: pending.label ?? (pending.organization ? `Sign in to ${pending.organization.name}` : 'Sign-in'),
+    profileId: pending.profile.id,
+    startedAt: Date.now(),
+    status: 'waiting',
+    viaPar: !!pending.par,
+  })
 }
 
 export function newTokenSet(partial: Omit<TokenSet, 'id' | 'obtainedAt'>): TokenSet {
@@ -151,6 +162,8 @@ export interface CallbackOutcome {
   check?: CallbackCheck
   /** The code, kept until the user redeems or discards it. */
   received?: ReceivedCode
+  /** The automatic redemption, when the configuration asks for it. */
+  redeeming?: Promise<RedeemOutcome>
   error?: string
 }
 
@@ -160,43 +173,122 @@ export interface RedeemOutcome {
   error?: string
 }
 
-/** Runs once on the /callback page: checks the response and keeps the code. Redeeming is a separate step. */
+/** Checks a response in the tab that holds its transaction, keeps the code and updates the sign-in.
+ * Redeeming is a separate step unless the configuration redeems automatically. */
+export function acceptResponse(callback: CallbackParams): CallbackOutcome {
+  const pending = callback.state ? takePending(callback.state) : undefined
+  const check = checkCallback(callback, pending)
+  const id = callback.state ?? crypto.randomUUID()
+  const known = getState().signIns.some((x) => x.id === id)
+  const fail = (message: string) => {
+    const entry = { status: 'failed' as const, message, finishedAt: Date.now() }
+    if (known) updateSignIn(id, entry)
+    else if (pending) upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, startedAt: pending.createdAt, ...entry })
+  }
+  if (callback.error) {
+    fail(`${callback.error}${callback.errorDescription ? `: ${callback.errorDescription}` : ''}`)
+    return { callback, pending, check }
+  }
+  if (!check.ok || !callback.code || !pending) {
+    fail(check.problems.join(' ') || 'The response has no code.')
+    return { callback, pending, check }
+  }
+  const received: ReceivedCode = { id: pending.state, code: callback.code, receivedAt: Date.now(), pending }
+  addCode(received)
+  if (known) updateSignIn(id, { status: 'code', message: undefined, iss: !!callback.iss })
+  else upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, startedAt: pending.createdAt, status: 'code', viaPar: !!pending.par, iss: !!callback.iss })
+  const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
+  const redeeming = profile.redeemCodeAutomatically ? redeemCode(received) : undefined
+  return { callback, pending, check, received, redeeming }
+}
+
+/** Starts listening for responses handed over from sign-in tabs. Call once per playground tab. */
+export function listenForSignInResponses(): () => void {
+  return listenForResponses(hasPending, (raw, source) => acceptResponse(callbackFromRaw(raw, source)))
+}
+
+/** The callback page when no playground tab took the response: completes it here. */
 export function receiveCallback(location: Location): CallbackOutcome {
   const callback = parseCallback(location)
   if (!callback) return { error: 'This page expects an authorization response (code or error) in the URL.' }
-  // Drop the code from the address bar and history straight away.
   window.history.replaceState(null, '', location.pathname)
-  const pending = callback.state ? takePending(callback.state) : undefined
-  const check = checkCallback(callback, pending)
-  if (callback.error || !check.ok || !callback.code || !pending) return { callback, pending, check }
-  const received: ReceivedCode = { id: pending.state, code: callback.code, receivedAt: Date.now(), pending }
-  addCode(received)
-  return { callback, pending, check, received }
+  return acceptResponse(callback)
 }
 
-/** Redeems a received code at the token endpoint the request named, and stores the token set. */
-export async function redeemCode(received: ReceivedCode): Promise<RedeemOutcome> {
+/** The token request for a received code, ready to edit: URL, form fields and headers. Client
+ * authentication is included, with the secret from memory. */
+export interface TokenRequestDraft {
+  url: string
+  form: [string, string][]
+  headers: [string, string][]
+}
+
+export function tokenRequestDraft(received: ReceivedCode): TokenRequestDraft {
   const { pending, code } = received
-  // The client the request was made for (the snapshot); its secret, which lives in memory only, comes
-  // from the store.
+  const fields = codeExchangeForm({
+    code,
+    redirectUri: pending.profile.redirectUri,
+    codeVerifier: pending.codeVerifier,
+    resources: pending.profile.resources,
+    extraParams: pending.profile.extraTokenParams,
+  })
+  const headers: Record<string, string> = {}
+  // The client the request was made for (the snapshot); its secret lives in memory only. A missing
+  // secret is left empty for the user to fill in rather than failing here.
   const creds = { ...credentialsFor(pending.profile), clientSecret: secretsFor(pending.profile.id).clientSecret }
+  try {
+    applyClientAuth(creds, fields, headers)
+  } catch {
+    if (creds.method === 'client_secret_basic') headers.Authorization = 'Basic '
+    else Object.assign(fields, { client_id: creds.clientId, client_secret: '' })
+  }
+  return {
+    url: pending.tokenEndpoint,
+    form: Object.entries(fields).filter((e): e is [string, string] => e[1] !== undefined),
+    headers: Object.entries(headers),
+  }
+}
+
+/** The draft as curl. Client secrets are written as $CLIENT_SECRET so they never reach the clipboard. */
+export function draftCurl(draft: TokenRequestDraft): string {
+  return toCurl({
+    method: 'POST',
+    url: draft.url,
+    headers: { ...Object.fromEntries(draft.headers), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: encodeForm(draft.form),
+  })
+}
+
+export function codeExchangeCurl(received: ReceivedCode): string {
+  return draftCurl(tokenRequestDraft(received))
+}
+
+/** Sends a token request for a received code, as drafted (and possibly edited), and stores the result. */
+export async function redeemCode(received: ReceivedCode, draft: TokenRequestDraft = tokenRequestDraft(received)): Promise<RedeemOutcome> {
+  const { pending, code } = received
   let grant: GrantResult
   try {
-    grant = await exchangeCode({
-      tokenEndpoint: pending.tokenEndpoint,
-      creds,
-      code,
-      redirectUri: pending.profile.redirectUri,
-      codeVerifier: pending.codeVerifier,
-      resources: pending.profile.resources,
-      extraParams: pending.profile.extraTokenParams,
+    requireHttpUrl(draft.url, 'token endpoint')
+    const exchange = await tracedFetch({
+      label: 'Token: authorization_code',
+      url: draft.url,
+      form: draft.form,
+      headers: Object.fromEntries(draft.headers.filter(([k]) => k.trim())),
     })
+    grant = toGrantResult(exchange)
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) }
   }
   // The code is single use: a failed redemption has most likely spent it too (RFC 6749 §4.1.2).
+  // It stays in the list so the request can be sent again to see what the server does with a reused code.
+  if (!grant.tokens) {
+    const e = grant.error
+    // Sending a spent code again is a test of the server: it does not undo a sign-in that got tokens.
+    if (getState().signIns.find((x) => x.id === received.id)?.status !== 'redeemed')
+      updateSignIn(received.id, { status: 'failed', message: e ? `${e.error}${e.error_description ? `: ${e.error_description}` : ''}` : `HTTP ${grant.exchange.response?.status ?? '?'}`, finishedAt: Date.now() })
+    return { grant }
+  }
   removeCode(received.id)
-  if (!grant.tokens) return { grant }
   const tokenSet = newTokenSet({
     label: pending.label ?? (pending.organization ? `Sign in to ${pending.organization.name}` : 'Authorization code'),
     grant: 'authorization_code',
@@ -205,30 +297,12 @@ export async function redeemCode(received: ReceivedCode): Promise<RedeemOutcome>
     nonce: pending.nonce,
     code,
     organization: pending.organization,
-    tokenEndpoint: pending.tokenEndpoint,
+    tokenEndpoint: draft.url,
     maxAge: pending.profile.maxAge.trim() ? Number(pending.profile.maxAge) : undefined,
   })
   addTokenSet(tokenSet)
-  setState({ view: 'tokens' })
+  updateSignIn(received.id, { status: 'redeemed', tokenSetId: tokenSet.id, message: undefined, finishedAt: Date.now() })
   return { grant, tokenSet }
-}
-
-/** The token request for a received code as curl, to redeem it outside the playground. The client
- * secret is left as $CLIENT_SECRET so it never reaches the clipboard. */
-export function codeExchangeCurl(received: ReceivedCode): string {
-  const { pending, code } = received
-  const form = codeExchangeForm({
-    code,
-    redirectUri: pending.profile.redirectUri,
-    codeVerifier: pending.codeVerifier,
-    resources: pending.profile.resources,
-    extraParams: pending.profile.extraTokenParams,
-  })
-  const headers: Record<string, string> = {}
-  // The client the request was made for (the snapshot), with a stand-in secret.
-  applyClientAuth({ clientId: pending.profile.clientId, method: pending.profile.clientAuthMethod, clientSecret: 'x' }, form, headers)
-  const body = encodeForm(form)
-  return toCurl({ method: 'POST', url: pending.tokenEndpoint, headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' }, body })
 }
 
 /** RFC 6749 §6: the server may leave out a new refresh token (the old one stays valid), and OIDC Core

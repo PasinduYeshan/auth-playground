@@ -45,7 +45,7 @@ export interface GrantResult {
   error?: { error: string; error_description?: string }
 }
 
-function toGrantResult(exchange: HttpExchange): GrantResult {
+export function toGrantResult(exchange: HttpExchange): GrantResult {
   const body = exchange.response?.json as Record<string, unknown> | undefined
   if (exchange.response && exchange.response.status >= 200 && exchange.response.status < 300 && body?.access_token)
     return { exchange, tokens: body as TokenResponse }

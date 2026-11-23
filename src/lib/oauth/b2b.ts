@@ -6,10 +6,21 @@
 import { customGrant, TOKEN_EXCHANGE_GRANT, type ClientCredentials, type GrantResult } from './client'
 import { tracedFetch, type HttpExchange } from './http'
 import { decodeToken } from './jwt'
+import { isHttpUrl } from './url'
 import { genericB2B, type B2BConfig, type OrgClaims, type Organization, type Profile, type TokenSet } from './types'
 
 export function resolveTemplate(template: string, issuer: string, org: string): string {
   return template.replace(/\{issuer\}/g, issuer.replace(/\/+$/, '')).replace(/\{org\}/g, encodeURIComponent(org))
+}
+
+/** The value for {issuer}: the configured issuer, else the origin of the authorization endpoint
+ * (where most servers, ThunderID among them, also serve the organization endpoints). */
+export function templateIssuer(profile: Profile): string {
+  if (profile.issuer.trim()) return profile.issuer.trim()
+  for (const ep of [profile.endpoints.authorization, profile.endpoints.token]) {
+    if (isHttpUrl(ep)) return new URL(ep).origin
+  }
+  throw new Error('Set the issuer URL in Server settings: the organization endpoints are built from it.')
 }
 
 export interface OrgEndpoints {
@@ -24,10 +35,10 @@ export function orgEndpoints(profile: Profile, org: Organization): OrgEndpoints 
   if (b2b.style === 'param') {
     return { authorization: profile.endpoints.authorization, token: profile.endpoints.token, params: [[b2b.paramName, org.id]] }
   }
-  if (!profile.issuer) throw new Error('Set the issuer: the organization endpoint templates use it.')
+  const issuer = templateIssuer(profile)
   return {
-    authorization: resolveTemplate(b2b.authorizeTemplate, profile.issuer, org.id),
-    token: b2b.redeemAtOrgTokenEndpoint ? resolveTemplate(b2b.tokenTemplate, profile.issuer, org.id) : profile.endpoints.token,
+    authorization: resolveTemplate(b2b.authorizeTemplate, issuer, org.id),
+    token: b2b.redeemAtOrgTokenEndpoint ? resolveTemplate(b2b.tokenTemplate, issuer, org.id) : profile.endpoints.token,
     params: [],
   }
 }
@@ -42,7 +53,7 @@ export interface OrgListResult {
 /** Reads the user's organizations: a plain array, or an object with organizationUnits, organizations or items. */
 export async function fetchOrganizations(profile: Profile, accessToken: string): Promise<OrgListResult> {
   if (!profile.b2b.listTemplate.trim()) throw new Error('Set the organization list endpoint first.')
-  const url = resolveTemplate(profile.b2b.listTemplate, profile.issuer, '')
+  const url = resolveTemplate(profile.b2b.listTemplate, templateIssuer(profile), '')
   const exchange = await tracedFetch({ label: 'List organizations', url, headers: { Authorization: `Bearer ${accessToken}` } })
   const body = exchange.response?.json as Record<string, unknown> | unknown[] | undefined
   if (!exchange.response || exchange.response.status >= 300 || !body)
@@ -86,7 +97,7 @@ export function exchangeForOrganization(
 /** The organization's token endpoint (the default one for parameter-style servers). */
 export function orgTokenEndpoint(profile: Profile, org: Organization): string {
   if (profile.b2b.style === 'param') return profile.endpoints.token
-  return resolveTemplate(profile.b2b.tokenTemplate, profile.issuer, org.id)
+  return resolveTemplate(profile.b2b.tokenTemplate, templateIssuer(profile), org.id)
 }
 
 const COMMON_ORG_CLAIMS: OrgClaims[] = [

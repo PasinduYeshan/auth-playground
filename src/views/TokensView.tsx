@@ -423,7 +423,7 @@ export function TokensView() {
               onClick={() => {
                 if (confirm('Remove every token set and unredeemed code from this tab?')) {
                   clearTokenSets()
-                  setState({ tokenSets: [], selectedTokenSetId: undefined, codes: [] })
+                  setState({ tokenSets: [], selectedTokenSetId: undefined, codes: [], signIns: [], openCode: undefined })
                 }
               }}
             >

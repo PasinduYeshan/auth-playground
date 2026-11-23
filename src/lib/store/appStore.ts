@@ -12,6 +12,24 @@ import { loadTokenSets, saveTokenSets } from './tokens'
 
 export type ViewName = 'authorize' | 'grants' | 'tokens' | 'organizations' | 'compare' | 'http'
 
+/** One sign-in started from the playground, followed until it ends in tokens or an error. */
+export interface SignIn {
+  /** The state value of the request. */
+  id: string
+  label: string
+  profileId: string
+  startedAt: number
+  status: 'waiting' | 'code' | 'redeemed' | 'failed'
+  /** What went wrong, or what the server said. */
+  message?: string
+  tokenSetId?: string
+  finishedAt?: number
+  /** Set when the request went out by PAR. */
+  viaPar?: boolean
+  /** Whether the response carried iss (RFC 9207); it matched if the sign-in got this far. */
+  iss?: boolean
+}
+
 export interface AppState {
   profiles: Profile[]
   activeProfileId: string
@@ -26,6 +44,12 @@ export interface AppState {
   selectedTokenSetId?: string
   /** Authorization codes received but not redeemed yet. */
   codes: ReceivedCode[]
+  /** Sign-ins started from this tab, newest first. */
+  signIns: SignIn[]
+  /** The received code whose token request is open in the editor. */
+  openCode?: ReceivedCode
+  /** The server settings drawer. */
+  settingsOpen: boolean
   exchanges: HttpExchange[]
   view: ViewName
   revealSecrets: boolean
@@ -49,6 +73,15 @@ const CODES_KEY = 'ap:codes:v1'
 function loadCodes(): ReceivedCode[] {
   try {
     return JSON.parse(sessionStorage.getItem(CODES_KEY) ?? '[]') as ReceivedCode[]
+  } catch {
+    return []
+  }
+}
+
+const SIGNINS_KEY = 'ap:signins:v1'
+function loadSignIns(): SignIn[] {
+  try {
+    return JSON.parse(sessionStorage.getItem(SIGNINS_KEY) ?? '[]') as SignIn[]
   } catch {
     return []
   }
@@ -78,6 +111,8 @@ function initialState(): AppState {
     tokenSets,
     selectedTokenSetId: tokenSets[0]?.id,
     codes: loadCodes(),
+    signIns: loadSignIns(),
+    settingsOpen: false,
     exchanges: loadExchanges(),
     view: viewFromHash(),
     revealSecrets: false,
@@ -98,6 +133,7 @@ export function setState(update: Partial<AppState> | ((s: AppState) => Partial<A
   if (patch.activeProfileId) saveActiveProfileId(next.activeProfileId)
   if (patch.tokenSets) saveTokenSets(next.tokenSets)
   if (patch.codes) sessionStorage.setItem(CODES_KEY, JSON.stringify(next.codes))
+  if (patch.signIns) sessionStorage.setItem(SIGNINS_KEY, JSON.stringify(next.signIns.slice(0, 50)))
   if (patch.exchanges) {
     try {
       // Client secrets stay in memory: the saved copy has them redacted.
@@ -201,4 +237,16 @@ export function addCode(code: ReceivedCode): void {
 
 export function removeCode(id: string): void {
   setState((s) => ({ codes: s.codes.filter((c) => c.id !== id) }))
+}
+
+export function upsertSignIn(entry: SignIn): void {
+  setState((s) => ({ signIns: [entry, ...s.signIns.filter((x) => x.id !== entry.id)] }))
+}
+
+export function updateSignIn(id: string, patch: Partial<SignIn>): void {
+  setState((s) => ({ signIns: s.signIns.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
+}
+
+export function removeSignIn(id: string): void {
+  setState((s) => ({ signIns: s.signIns.filter((x) => x.id !== id), codes: s.codes.filter((c) => c.id !== id), openCode: s.openCode?.id === id ? undefined : s.openCode }))
 }

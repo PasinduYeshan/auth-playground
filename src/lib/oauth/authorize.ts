@@ -204,16 +204,93 @@ export function parseCallback(location: { search: string; hash: string }): Callb
   params.forEach((v, k) => {
     raw[k] = v
   })
+  return callbackFromRaw(raw, pick)
+}
+
+/** The response parameters as received, for a response handed over from the sign-in tab. */
+export function callbackFromRaw(raw: Record<string, string>, source: 'query' | 'fragment'): CallbackParams {
+  const get = (k: string) => (typeof raw[k] === 'string' ? raw[k] : undefined)
   return {
     raw,
-    source: pick,
-    code: params.get('code') ?? undefined,
-    state: params.get('state') ?? undefined,
-    iss: params.get('iss') ?? undefined,
-    error: params.get('error') ?? undefined,
-    errorDescription: params.get('error_description') ?? undefined,
-    errorUri: params.get('error_uri') ?? undefined,
+    source,
+    code: get('code'),
+    state: get('state'),
+    iss: get('iss'),
+    error: get('error'),
+    errorDescription: get('error_description'),
+    errorUri: get('error_uri'),
   }
+}
+
+/** Whether this tab holds the transaction for a state value (without taking it). */
+export function hasPending(state: string): boolean {
+  return sessionStorage.getItem(PENDING_PREFIX + state) !== null
+}
+
+// The request as editable JSON. A repeated parameter (resource) becomes an array.
+
+/** Values the playground generates for every request; refreshed after each sign-in. */
+export const GENERATED_PARAMS = ['state', 'nonce', 'code_challenge'] as const
+
+export function paramsToJson(params: [string, string][]): string {
+  const obj: Record<string, string | string[]> = {}
+  for (const [k, v] of params) {
+    const prev = obj[k]
+    obj[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v]
+  }
+  return JSON.stringify(obj, null, 2)
+}
+
+/** Parses the edited JSON back into parameters. Numbers and booleans are sent as text. */
+export function jsonToParams(text: string): [string, string][] {
+  let obj: unknown
+  try {
+    obj = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`The request is not valid JSON: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('The request must be a JSON object of parameter names and values.')
+  const out: [string, string][] = []
+  const scalar = (k: string, v: unknown) => {
+    if (v === null || v === undefined) return
+    if (typeof v === 'object') throw new Error(`"${k}" must be text, a number, a boolean or a list of those.`)
+    out.push([k, String(v)])
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (Array.isArray(v)) for (const item of v) scalar(k, item)
+    else scalar(k, v)
+  }
+  return out
+}
+
+/** After regenerating, carries the user's edits over: a generated value left as it was is replaced
+ * by the new one, a value the user typed stays. */
+export function carryDraft(draft: string, before: [string, string][], after: [string, string][]): string {
+  let params: [string, string][]
+  try {
+    params = jsonToParams(draft)
+  } catch {
+    return draft
+  }
+  const oldValue = (k: string) => before.find(([pk]) => pk === k)?.[1]
+  const newValue = (k: string) => after.find(([pk]) => pk === k)?.[1]
+  const generated: readonly string[] = GENERATED_PARAMS
+  return paramsToJson(params.map(([k, v]) => (generated.includes(k) && v === oldValue(k) && newValue(k) !== undefined ? [k, newValue(k)!] : [k, v])))
+}
+
+/** The request with the user's parameters. state and nonce follow the parameters, so the response
+ * and the ID token are checked against what was actually sent. */
+export function withParams(req: AuthorizationRequest, params: [string, string][]): AuthorizationRequest {
+  const url = requireHttpUrl(req.pending.authorizationEndpoint, 'authorization endpoint')
+  for (const [k, v] of params) url.searchParams.append(k, v)
+  const value = (k: string) => params.find(([pk]) => pk === k)?.[1]
+  const pending: PendingAuthorization = {
+    ...req.pending,
+    state: value('state') ?? req.pending.state,
+    nonce: value('nonce'),
+    authorizationUrl: url.toString(),
+  }
+  return { url: url.toString(), params, pending }
 }
 
 /** A code that passed the callback checks and waits for the user to redeem it (or not). */

@@ -1,33 +1,14 @@
-import { ExternalLink, Loader2, RefreshCw, Send } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { ExternalLink, Loader2, RefreshCw, RotateCcw, Send } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { HttpExchangeView } from '../components/HttpExchangeView'
-import { ReceivedCodeCard } from '../components/ReceivedCodeCard'
-import { Alert, Badge, CopyButton } from '../components/ui'
+import { TokenRequestEditor } from '../components/TokenRequestEditor'
+import { Alert, CopyButton, cx } from '../components/ui'
 import { ERROR_HINTS } from '../lib/errors'
-import { navigateToAuthorization, prepareAuthorization, pushAuthorization, rememberAuthorization } from '../lib/flows'
-import type { AuthorizationRequest, ParResult, PendingAuthorization } from '../lib/oauth/authorize'
+import { prepareAuthorization, pushAuthorization, startSignIn } from '../lib/flows'
+import { carryDraft, jsonToParams, paramsToJson, withParams, type AuthorizationRequest, type ParResult, type PendingAuthorization } from '../lib/oauth/authorize'
 import type { Organization, Profile } from '../lib/oauth/types'
 import { displayUrl, isHttpUrl } from '../lib/oauth/url'
-import { activeProfile, updateProfile, useAppState } from '../lib/store/appStore'
-
-const PARAM_DOCS: Record<string, string> = {
-  response_type: 'Authorization code flow',
-  client_id: 'Your client',
-  redirect_uri: 'Where the server sends the response',
-  scope: 'Requested permissions',
-  state: 'Random, single use: binds the response to this request (CSRF)',
-  nonce: 'Random: must come back in the ID token (replay)',
-  code_challenge: 'PKCE: derived from a secret verifier kept in this tab',
-  code_challenge_method: 'PKCE transform',
-  resource: 'Target API (RFC 8707): sets the access token audience',
-  prompt: 'Login behaviour',
-  max_age: 'Maximum age of the authentication',
-  login_hint: 'Pre-fills the user',
-  acr_values: 'Requested authentication context',
-  ui_locales: 'Preferred UI languages',
-  response_mode: 'How the response is returned',
-  request_uri: 'Reference to the pushed request (RFC 9126)',
-}
+import { activeProfile, setState, updateProfile, useAppState } from '../lib/store/appStore'
 
 /** Seconds until a pushed request expires, ticking once a second from the moment of the push. */
 function useCountdown(window: { pushedAt: number; expiresAt: number } | undefined): number | undefined {
@@ -51,6 +32,22 @@ export function profileProblems(profile: Profile): string[] {
   return p
 }
 
+/** Opens the sign-in in its own tab, so this tab keeps its state and several sign-ins can run at once.
+ * The tab is opened before anything else so the browser treats it as a response to the click. */
+function openSignIn(pending: PendingAuthorization): void {
+  const tab = window.open('about:blank', '_blank')
+  startSignIn(pending)
+  if (!tab) {
+    // Pop-ups blocked: sign in in this tab; the callback page brings the response back here.
+    window.location.assign(pending.authorizationUrl)
+    return
+  }
+  // The sign-in page gets no handle on this tab.
+  tab.opener = null
+  tab.location.href = pending.authorizationUrl
+}
+
+/** The authorization request as editable JSON, with the PAR step and sign-in. */
 export function RequestPreview({ profile, org, overrides, label, startLabel }: {
   profile: Profile
   org?: Organization
@@ -59,24 +56,31 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
   startLabel?: string
 }) {
   const [req, setReq] = useState<AuthorizationRequest>()
+  const current = useRef<AuthorizationRequest | undefined>(undefined)
   const [error, setError] = useState<string>()
-  // PAR step: the push result, and the transaction to redirect with once the push succeeded.
+  const [draft, setDraft] = useState<string>()
+  const [view, setView] = useState<'json' | 'url'>('json')
   const [pushing, setPushing] = useState(false)
   const [par, setPar] = useState<{ result: ParResult; pending?: PendingAuthorization }>()
   // Settings that do not change the request (name, timestamps, the two step toggles) must not
-  // regenerate it: that would throw away a request already pushed with PAR.
+  // regenerate it: that would throw away edits and a request already pushed with PAR.
   const { updatedAt: _u, name: _n, usePar: _p, redeemCodeAutomatically: _r, ...requestFields } = profile
   const key = JSON.stringify([requestFields, org, overrides])
   const remaining = useCountdown(par?.pending?.par)
 
+  /** New state, nonce and verifier. Edits are kept: generated values left as they were follow along. */
   const regenerate = useCallback(() => {
     setPar(undefined)
     prepareAuthorization(profile, org, { overrides, label })
       .then((r) => {
+        const before = current.current
+        current.current = r
         setReq(r)
+        setDraft((d) => (d && before ? carryDraft(d, before.params, r.params) : d))
         setError(undefined)
       })
       .catch((e: unknown) => {
+        current.current = undefined
         setReq(undefined)
         setError(e instanceof Error ? e.message : String(e))
       })
@@ -84,14 +88,36 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
   }, [key])
 
   useEffect(() => {
+    // A changed setting rebuilds the request from the configuration.
+    setDraft(undefined)
     regenerate()
   }, [regenerate])
 
+  const edited = useMemo((): { req?: AuthorizationRequest; error?: string } => {
+    if (!req) return {}
+    if (draft === undefined) return { req }
+    try {
+      return { req: withParams(req, jsonToParams(draft)) }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) }
+    }
+  }, [req, draft])
+
+  if (error) return <Alert tone="amber">{error}</Alert>
+  if (!req) return null
+  const effective = edited.req
+  const usePar = profile.usePar
+  const target = usePar ? par?.pending : effective?.pending
+  const expired = remaining === 0
+  const parErr = par?.result.error?.error
+  const text = draft ?? paramsToJson(req.params)
+  const rows = Math.max(6, text.split('\n').length + 1)
+
   const push = async () => {
-    if (!req) return
+    if (!effective) return
     setPushing(true)
     try {
-      setPar(await pushAuthorization(req))
+      setPar(await pushAuthorization(effective))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -99,55 +125,88 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
     }
   }
 
-  if (error) return <Alert tone="amber">{error}</Alert>
-  if (!req) return null
-  const usePar = profile.usePar
-  const target = usePar ? par?.pending : req.pending
-  const expired = remaining === 0
-  const parErr = par?.result.error?.error
+  const signIn = () => {
+    if (!target) return
+    openSignIn(target)
+    // The values are single use: the next sign-in gets new ones.
+    regenerate()
+  }
+
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-        <table className="w-full text-sm">
-          <tbody>
-            {req.params.map(([k, v], i) => (
-              <tr key={i} className="border-t border-zinc-100 align-top first:border-t-0 dark:border-zinc-800">
-                <td className="w-48 bg-zinc-50/60 px-3 py-1.5 dark:bg-zinc-900/60">
-                  <div className="code font-semibold text-indigo-600 dark:text-indigo-400">{k}</div>
-                  {PARAM_DOCS[k] && <div className="text-[11px] text-zinc-500">{PARAM_DOCS[k]}</div>}
-                </td>
-                <td className="code px-3 py-1.5 break-all">{v}</td>
-              </tr>
+      <section className="card overflow-hidden">
+        <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 px-3.5 py-2.5 dark:border-zinc-800">
+          <span className="font-semibold">Authorization request</span>
+          <span className="code text-zinc-500">GET {displayUrl(req.pending.authorizationEndpoint)}</span>
+          <span className="flex-1" />
+          <div role="tablist" aria-label="Request view" className="flex rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-800">
+            {(['json', 'url'] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className={cx('h-7 rounded-md px-3 text-[13px] font-medium', view === v ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500')}
+              >
+                {v.toUpperCase()}
+              </button>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <details>
-        <summary className="cursor-pointer text-xs font-medium text-zinc-600 select-none dark:text-zinc-400">PKCE verifier and full URL</summary>
-        <div className="mt-2 space-y-2 text-sm">
-          <div>
-            <span className="label">code_verifier (stays in this tab until the code exchange)</span>
-            <code className="code break-all">{req.pending.codeVerifier}</code>
-          </div>
-          <div>
-            <span className="label">Authorization URL</span>
-            <div className="flex items-start gap-1">
-              <code className="code flex-1 break-all">{req.url}</code>
-              <CopyButton value={req.url} onCopy={() => rememberAuthorization(req.pending)} />
-            </div>
           </div>
         </div>
-      </details>
+        {view === 'json' ? (
+          <textarea
+            className="code block w-full resize-y bg-white px-4 py-3 text-[13px] leading-[22px] text-zinc-900 outline-none focus:bg-indigo-50/30 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-indigo-950/20"
+            value={text}
+            rows={rows}
+            spellCheck={false}
+            aria-label="Authorization request parameters (JSON)"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+        ) : (
+          <div className="space-y-3 px-4 py-3">
+            {effective ? (
+              <div className="flex items-start gap-1">
+                <code className="code flex-1 break-all">{effective.url}</code>
+                <CopyButton value={effective.url} onCopy={() => startSignIn(effective.pending)} />
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-500">Fix the JSON to see the URL.</p>
+            )}
+            <div>
+              <span className="label">code_verifier (stays in this tab until the code exchange)</span>
+              <code className="code break-all">{req.pending.codeVerifier}</code>
+            </div>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 border-t border-zinc-100 bg-zinc-50/70 px-3.5 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+          {edited.error ? (
+            <span className="text-red-700 dark:text-red-400">{edited.error}</span>
+          ) : (
+            <span>state, nonce and code_challenge are generated, and change after each sign-in. Edit, add or remove anything else: the JSON is the request.</span>
+          )}
+          <span className="flex-1" />
+          {draft !== undefined && (
+            <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => setDraft(undefined)}>
+              <RotateCcw size={12} /> Reset edits
+            </button>
+          )}
+          <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={regenerate} title="New state, nonce and verifier">
+            <RefreshCw size={12} /> Regenerate
+          </button>
+        </div>
+      </section>
+
       {usePar && (
-        <div className="space-y-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+        <div className="card space-y-2 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium">Push the request (RFC 9126)</span>
+            <span className="text-sm font-medium">Push the request first (RFC 9126)</span>
             <span className="text-xs text-zinc-500">
-              to <span className="code">{profile.endpoints.par || '(no PAR endpoint: run discovery or set it in the configuration)'}</span>
+              to <span className="code">{profile.endpoints.par ? displayUrl(profile.endpoints.par) : '(no PAR endpoint: set it in Server settings)'}</span>
             </span>
           </div>
           {!par?.pending && (
-            <button type="button" className="btn-primary" disabled={pushing || !profile.endpoints.par} onClick={() => void push()}>
+            <button type="button" className="btn-secondary" disabled={pushing || !profile.endpoints.par || !effective} onClick={() => void push()}>
               {pushing ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Push request
             </button>
           )}
@@ -165,106 +224,101 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
                 <code className="code break-all">{par.pending.par.requestUri}</code>
               </div>
               <div className={expired ? 'text-red-600 dark:text-red-400' : 'text-zinc-500'}>
-                {expired ? 'The pushed request has expired. Regenerate and push again.' : `Expires in ${remaining}s. The browser now carries only client_id and request_uri:`}
+                {expired ? 'The pushed request has expired. Regenerate and push again.' : `Expires in ${remaining}s. The browser now carries only client_id and request_uri.`}
               </div>
-              {!expired && (
-                <div className="flex items-start gap-1">
-                  <code className="code flex-1 break-all">{par.pending.authorizationUrl}</code>
-                  <CopyButton value={par.pending.authorizationUrl} onCopy={() => par.pending && rememberAuthorization(par.pending)} />
-                </div>
-              )}
             </div>
           )}
           {par && <HttpExchangeView exchange={par.result.exchange} defaultOpen={!par.pending} />}
         </div>
       )}
+
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="btn-primary"
-          disabled={!target || expired}
-          title={usePar && !par?.pending ? 'Push the request first' : undefined}
-          onClick={() => target && navigateToAuthorization(target)}
-        >
-          <ExternalLink size={15} /> {startLabel ?? 'Start sign-in'}
+        <button type="button" className="btn-primary h-10 px-4 font-semibold" disabled={!target || expired} title={usePar && !par?.pending ? 'Push the request first' : undefined} onClick={signIn}>
+          <ExternalLink size={16} /> {startLabel ?? 'Sign in in new tab'}
         </button>
-        <button type="button" className="btn-ghost" onClick={regenerate} title="New state, nonce and verifier">
-          <RefreshCw size={14} /> Regenerate
-        </button>
-        <span className="text-xs text-zinc-500">
-          Goes to <span className="code">{displayUrl(req.pending.authorizationEndpoint)}</span>; the code is redeemed at{' '}
-          <span className="code">{displayUrl(req.pending.tokenEndpoint, 'path')}</span>
-          {profile.redeemCodeAutomatically ? ' as soon as it arrives.' : ' when you choose.'}
+        {target && !expired && (
+          <CopyButton value={target.authorizationUrl} label="Copy URL" className="h-10 border border-zinc-200 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" onCopy={() => { startSignIn(target); regenerate() }} />
+        )}
+        <span className="text-[13px] text-zinc-500">
+          Opens a new tab; the response comes back here{profile.redeemCodeAutomatically ? ' and the code is redeemed at once.' : ', and you decide what to do with the code.'}
         </span>
       </div>
     </div>
   )
 }
 
-function Toggle({ checked, onChange, label, hint, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint: string; disabled?: boolean }) {
+function Chip({ on, onChange, children, title }: { on: boolean; onChange: (v: boolean) => void; children: React.ReactNode; title?: string }) {
   return (
-    <label className={`flex items-start gap-2 text-sm ${disabled ? 'opacity-60' : ''}`}>
-      <input type="checkbox" className="mt-1" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
-      <span>
-        <span className="font-medium">{label}</span>
-        <span className="block text-xs text-zinc-500">{hint}</span>
-      </span>
+    <label className={on ? 'chip-on' : 'chip'} title={title}>
+      <input type="checkbox" className="accent-indigo-600" checked={on} onChange={(e) => onChange(e.target.checked)} />
+      {children}
     </label>
   )
 }
 
 export function AuthorizeView() {
   const profile = useAppState((s) => activeProfile(s))
-  const codes = useAppState((s) => s.codes.filter((c) => c.pending.profile.id === s.activeProfileId))
+  const openCode = useAppState((s) => s.openCode)
+  const [orgId, setOrgId] = useState('')
+  const org = profile.b2b.organizations.find((o) => o.id === orgId)
   const problems = profileProblems(profile)
+  const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
+
+  if (openCode) return <TokenRequestEditor key={openCode.id} received={openCode} />
+
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Authorization Code with PKCE</h2>
-        <p className="text-sm text-zinc-500">
-          Each step runs when you choose: review the request, push it (PAR) if you like, sign in, then redeem the code or keep it. The server redirects back to{' '}
-          <span className="code">{profile.redirectUri || '/callback'}</span>, where the response is checked.
-        </p>
+        <h2 className="text-xl font-semibold">Sign-in with authorization code</h2>
+        <p className="text-sm text-zinc-500">Edit the request, then sign in in a new tab. Each sign-in shows up under Sign-ins, where you decide what happens next.</p>
       </div>
-      {codes.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-semibold">Codes waiting to be redeemed</h3>
-          {codes.map((c) => (
-            <ReceivedCodeCard key={c.id} received={c} />
-          ))}
-        </div>
-      )}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Toggle
-          checked={profile.usePar}
-          onChange={(v) => updateProfile(profile.id, { usePar: v })}
-          label="Push the request first (PAR)"
-          hint={profile.endpoints.par ? 'RFC 9126: send the parameters in a back-channel POST, then redirect with a request_uri.' : 'The server advertises no PAR endpoint. Set one in the configuration to use PAR.'}
-        />
-        <Toggle
-          checked={profile.redeemCodeAutomatically}
-          onChange={(v) => updateProfile(profile.id, { redeemCodeAutomatically: v })}
-          label="Redeem the code automatically"
-          hint="Off: the callback stops after the checks, and you decide whether to redeem the code."
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={profile.pkceMethod === 'S256' ? 'chip-on' : 'chip'} title="Change the PKCE method in Server settings">
+          PKCE {profile.pkceMethod}
+        </span>
+        <Chip on={profile.useNonce} onChange={(v) => up({ useNonce: v })}>
+          nonce
+        </Chip>
+        <Chip on={profile.usePar} onChange={(v) => up({ usePar: v })} title={profile.endpoints.par ? 'RFC 9126: send the parameters in a back-channel POST, then redirect with a request_uri.' : 'The server advertises no PAR endpoint. Set one in Server settings.'}>
+          Push first (PAR)
+        </Chip>
+        <Chip on={profile.redeemCodeAutomatically} onChange={(v) => up({ redeemCodeAutomatically: v })} title="Off: the code waits under Sign-ins until you decide.">
+          Redeem code automatically
+        </Chip>
+        <span className={profile.expectIss ? 'chip-on' : 'chip'} title="RFC 9207: from discovery (authorization_response_iss_parameter_supported)">
+          {profile.expectIss ? 'iss required' : 'iss checked when sent'}
+        </span>
+        {profile.b2b.organizations.length > 0 && (
+          <>
+            <span className="h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
+            <label className="chip pr-1">
+              Organization
+              <select className="input h-7 w-auto border-0 bg-transparent py-0 text-[13px] dark:bg-transparent" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
+                <option value="">none</option>
+                {profile.b2b.organizations.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
       </div>
-      {problems.length > 0 && (
+      {problems.length > 0 ? (
         <Alert tone="blue">
           <ul className="list-inside list-disc">
             {problems.map((p) => (
               <li key={p}>{p}</li>
             ))}
           </ul>
+          <button type="button" className="btn-ghost mt-1 px-0 text-indigo-700 dark:text-indigo-300" onClick={() => setState({ settingsOpen: true })}>
+            Open Server settings
+          </button>
         </Alert>
+      ) : (
+        <RequestPreview profile={profile} org={org} />
       )}
-      {problems.length === 0 && <RequestPreview profile={profile} />}
-      <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
-        <Badge tone="green">state</Badge>
-        {profile.useNonce ? <Badge tone="green">nonce</Badge> : <Badge tone="amber">no nonce</Badge>}
-        <Badge tone={profile.pkceMethod === 'S256' ? 'green' : 'amber'}>PKCE {profile.pkceMethod}</Badge>
-        <Badge tone={profile.expectIss ? 'green' : 'neutral'}>{profile.expectIss ? 'iss required (RFC 9207)' : 'iss checked when sent (RFC 9207)'}</Badge>
-        <span>are generated per request, used once and checked on return.</span>
-      </div>
     </div>
   )
 }
