@@ -124,10 +124,11 @@ function SignInSteps({ entry }: { entry: SignIn }) {
  * sign-ins to an organization (the ones the Organizations page starts). */
 export function SignInResult({ organizationsOnly = false }: { organizationsOnly?: boolean }) {
   const signIns = useAppState((s) => (organizationsOnly ? s.signIns.filter((x) => x.organization) : s.signIns))
-  const [pickedId, setPickedId] = useState<string>()
+  // An earlier sign-in picked from the list stays shown until a newer sign-in arrives.
+  const [picked, setPicked] = useState<{ id: string; newest: string }>()
   const [showEarlier, setShowEarlier] = useState(false)
   if (signIns.length === 0) return null
-  const shown = signIns.find((x) => x.id === pickedId) ?? signIns[0]
+  const shown = (picked && picked.newest === signIns[0].id && signIns.find((x) => x.id === picked.id)) || signIns[0]
   const others = signIns.filter((x) => x.id !== shown.id)
 
   return (
@@ -153,7 +154,7 @@ export function SignInResult({ organizationsOnly = false }: { organizationsOnly?
         <ul className="mb-2 divide-y divide-zinc-100 rounded-lg border border-zinc-200 text-sm dark:divide-zinc-800 dark:border-zinc-800">
           {others.map((x) => (
             <li key={x.id}>
-              <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/60" onClick={() => { setPickedId(x.id); setShowEarlier(false) }}>
+              <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/60" onClick={() => { setPicked({ id: x.id, newest: signIns[0].id }); setShowEarlier(false) }}>
                 <span className={cx('h-2 w-2 rounded-full', DOT[x.status])} aria-hidden="true" />
                 <span className="font-medium">{TITLE[x.status]}</span>
                 <span className="truncate text-zinc-500">{x.label}</span>

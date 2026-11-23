@@ -8,7 +8,8 @@ import { requireHttpUrl } from './oauth/url'
 import { listenForResponses } from './handoff'
 import type { Jwks } from './oauth/jwt'
 import { toCurl } from './oauth/redact'
-import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
+import { serverPatch } from './oauth/presets'
+import type { ClientAuthMethod, GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
 import { addCode, addTokenSet, clientSecretOf, getState, removeCode, setState, updateProfile, updateSignIn, upsertSignIn } from './store/appStore'
 
 /** One of the configuration's clients, by its ClientConfig id, with the secret typed for it. */
@@ -47,6 +48,34 @@ export function introspectionCredentialsFor(profile: Profile, set?: TokenSet): C
   return set ? credentialsForSet(set, profile) : credentialsFor(profile)
 }
 
+const METADATA_ENDPOINTS: [keyof Profile['endpoints'], string][] = [
+  ['authorization', 'authorization_endpoint'],
+  ['token', 'token_endpoint'],
+  ['userinfo', 'userinfo_endpoint'],
+  ['introspection', 'introspection_endpoint'],
+  ['revocation', 'revocation_endpoint'],
+  ['jwks', 'jwks_uri'],
+  ['endSession', 'end_session_endpoint'],
+  ['deviceAuthorization', 'device_authorization_endpoint'],
+  ['par', 'pushed_authorization_request_endpoint'],
+]
+
+/** A new base URL: endpoints follow the preset's paths, and what discovery learned from the previous
+ * server (its endpoints, iss support, metadata) is dropped, so requests never go to the old server.
+ * Endpoints the user typed stay. */
+export function changeIssuer(profile: Profile, issuer: string): void {
+  const patch = serverPatch(profile, { issuer })
+  const m = getState().metadata[profile.id]
+  if (m && issuer.trim() !== profile.issuer.trim()) {
+    const endpoints = { ...(patch.endpoints ?? profile.endpoints) }
+    for (const [key, field] of METADATA_ENDPOINTS) if (typeof m[field] === 'string' && endpoints[key] === m[field]) endpoints[key] = ''
+    patch.endpoints = endpoints
+    patch.expectIss = false
+    setState((s) => ({ metadata: { ...s.metadata, [profile.id]: undefined } }))
+  }
+  updateProfile(profile.id, patch)
+}
+
 /** The issuer to save: the metadata's exact value (tokens carry it byte for byte, trailing slash
  * included) unless the user typed a different one, which discovery then warns about. */
 export function discoveredIssuer(input: string, metadataIssuer: string): string {
@@ -58,6 +87,9 @@ export function discoveredIssuer(input: string, metadataIssuer: string): string 
 
 export async function runDiscovery(profile: Profile): Promise<{ error?: string; warnings: string[] }> {
   const result = await discover(profile.issuer)
+  // The base URL may have changed while the document loaded: never apply one server's endpoints to another.
+  const now = getState().profiles.find((p) => p.id === profile.id)
+  if (now && now.issuer.trim() !== profile.issuer.trim()) return { warnings: ['The base URL changed while discovery ran, so nothing was applied.'] }
   if (!result.metadata) return { error: result.error, warnings: [] }
   const m = result.metadata
   setState((s) => ({ metadata: { ...s.metadata, [profile.id]: m } }))
@@ -274,6 +306,22 @@ export function codeExchangeCurl(received: ReceivedCode): string {
 }
 
 /** Sends a token request for a received code, as drafted (and possibly edited), and stores the result. */
+/** The client a token request was sent as, read from the request itself (it is editable). */
+export function sentClient(draft: TokenRequestDraft, profile: Profile): { clientId: string; method: ClientAuthMethod } {
+  const field = (name: string) => draft.form.find(([k]) => k === name)?.[1]
+  const basic = draft.headers.find(([k, v]) => k.toLowerCase() === 'authorization' && /^basic /i.test(v))?.[1]
+  if (basic) {
+    try {
+      const id = decodeURIComponent(atob(basic.slice(6).trim()).split(':')[0])
+      if (id) return { clientId: id, method: 'client_secret_basic' }
+    } catch {
+      // Not valid base64: fall back to the form or the configuration.
+    }
+  }
+  const clientId = field('client_id') ?? profile.clientId
+  return { clientId, method: field('client_secret') !== undefined ? 'client_secret_post' : clientId === profile.clientId ? profile.clientAuthMethod : 'none' }
+}
+
 export async function redeemCode(received: ReceivedCode, draft: TokenRequestDraft = tokenRequestDraft(received)): Promise<RedeemOutcome> {
   const { pending, code } = received
   let grant: GrantResult
@@ -309,7 +357,7 @@ export async function redeemCode(received: ReceivedCode, draft: TokenRequestDraf
     organization: pending.organization,
     tokenEndpoint: draft.url,
     maxAge: pending.profile.maxAge.trim() ? Number(pending.profile.maxAge) : undefined,
-    client: { clientId: pending.profile.clientId, method: pending.profile.clientAuthMethod },
+    client: sentClient(draft, pending.profile),
   })
   addTokenSet(tokenSet)
   updateSignIn(received.id, { status: 'redeemed', tokenSetId: tokenSet.id, message: undefined, finishedAt: Date.now() })

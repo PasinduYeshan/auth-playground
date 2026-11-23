@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { clientCredentials, credentialsFor, credentialsForSet, introspectionCredentialsFor, newTokenSet } from '../../flows'
-import { setClientSecret } from '../../store/appStore'
+import { changeIssuer, clientCredentials, credentialsFor, credentialsForSet, introspectionCredentialsFor, newTokenSet, sentClient } from '../../flows'
+import { getState, setClientSecret, setState } from '../../store/appStore'
 import { exportProfiles, sanitizeProfile } from '../../store/profiles'
 import { newProfile, patchProfile, type Profile } from '../types'
 
@@ -66,5 +66,34 @@ describe('named clients', () => {
     expect(p.introspectionClient).toBe('machine')
     expect(p.clientId).toBe('web')
     expect(sanitizeProfile({ clients: [{ id: 'a', name: 'A', clientId: 'x', authMethod: 'bogus' }] }).clients[0].authMethod).toBe('none')
+  })
+})
+
+describe('review fixes', () => {
+  it('attributes tokens to the client the token request was actually sent as', () => {
+    const p = twoClients()
+    const form = (pairs: [string, string][]) => ({ url: 'https://idp.example/token', form: pairs, headers: [] as [string, string][] })
+    expect(sentClient(form([['client_id', 'web']]), p)).toEqual({ clientId: 'web', method: 'none' })
+    expect(sentClient(form([['client_id', 'web-m2m'], ['client_secret', 'x']]), p)).toEqual({ clientId: 'web-m2m', method: 'client_secret_post' })
+    const basic = { url: 'https://idp.example/token', form: [] as [string, string][], headers: [['Authorization', `Basic ${btoa('web-m2m:x')}`]] as [string, string][] }
+    expect(sentClient(basic, p)).toEqual({ clientId: 'web-m2m', method: 'client_secret_basic' })
+  })
+
+  it("drops the previous server's discovery when the base URL changes, keeping typed endpoints", () => {
+    const p = newProfile({ issuer: 'https://a.example', expectIss: true, endpoints: { ...newProfile().endpoints, authorization: 'https://a.example/authorize', token: 'https://proxy.example/token' } })
+    setState(() => ({ profiles: [p], activeProfileId: p.id, metadata: { [p.id]: { issuer: 'https://a.example', authorization_endpoint: 'https://a.example/authorize', token_endpoint: 'https://a.example/token' } } }))
+    changeIssuer(p, 'https://b.example')
+    const after = getState().profiles[0]
+    expect(after.issuer).toBe('https://b.example')
+    expect(after.endpoints.authorization).toBe('')
+    expect(after.endpoints.token).toBe('https://proxy.example/token')
+    expect(after.expectIss).toBe(false)
+    expect(getState().metadata[p.id]).toBeUndefined()
+  })
+
+  it('keeps clients with the same ID but different methods apart when converting', () => {
+    const p = sanitizeProfile({ clientId: 'web', clientAuthMethod: 'none', machineClientId: 'web-m2m', machineAuthMethod: 'client_secret_post', introspectionClientId: 'web-m2m', introspectionAuthMethod: 'client_secret_basic' })
+    expect(p.clients.map((c) => c.authMethod)).toEqual(['none', 'client_secret_post', 'client_secret_basic'])
+    expect(p.introspectionClient).toBe('introspection')
   })
 })

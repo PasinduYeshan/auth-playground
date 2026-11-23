@@ -146,7 +146,8 @@ function sanitizeClients(src: Record<string, unknown>, base: Profile): Pick<Prof
   const method = authMethod(src.clientAuthMethod, 'none')
   const clients: ClientConfig[] = [{ id: DEFAULT_CLIENT, name: 'Default', clientId: base.clientId, authMethod: method }]
   const add = (id: string, name: string, clientId: string, m: ClientAuthMethod): string => {
-    const same = clients.find((c) => c.clientId === clientId)
+    // The same client ID with another authentication method stays a separate client.
+    const same = clients.find((c) => c.clientId === clientId && c.authMethod === m)
     if (same) return same.id
     clients.push({ id, name, clientId, authMethod: m })
     return id

@@ -4,7 +4,7 @@ import { HttpExchangeView } from '../components/HttpExchangeView'
 import { SignInResult } from '../components/SignIns'
 import { Alert, CopyButton, SecretInput, cx } from '../components/ui'
 import { ERROR_HINTS } from '../lib/errors'
-import { prepareAuthorization, pushAuthorization, runDiscovery, startSignIn } from '../lib/flows'
+import { changeIssuer, prepareAuthorization, pushAuthorization, runDiscovery, startSignIn } from '../lib/flows'
 import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
 import { carryDraft, jsonToParams, paramsToJson, withParams, type AuthorizationRequest, type ParResult, type PendingAuthorization } from '../lib/oauth/authorize'
 import type { Organization, Profile } from '../lib/oauth/types'
@@ -57,7 +57,7 @@ export function RequestPreview({ profile, org, overrides, label, startLabel, sho
   overrides?: [string, string][]
   label?: string
   startLabel?: string
-  /** Off: the request is sent as generated, without the JSON editor on screen. */
+  /** Off: the JSON editor is hidden. Edits made in it are still sent, and a notice says so. */
   showEditor?: boolean
 }) {
   const [req, setReq] = useState<AuthorizationRequest>()
@@ -67,9 +67,20 @@ export function RequestPreview({ profile, org, overrides, label, startLabel, sho
   const [view, setView] = useState<'json' | 'url'>('json')
   const [pushing, setPushing] = useState(false)
   const [par, setPar] = useState<{ result: ParResult; pending?: PendingAuthorization }>()
-  // Settings that do not change the request (name, timestamps, the two step toggles) must not
-  // regenerate it: that would throw away edits and a request already pushed with PAR.
-  const { updatedAt: _u, name: _n, usePar: _p, redeemCodeAutomatically: _r, ...requestFields } = profile
+  // Settings that do not change the request (name, timestamps, the two step toggles, other clients,
+  // token request extras, introspection) must not regenerate it: that would throw away edits and a
+  // request already pushed with PAR. The sign-in client is covered by clientId and clientAuthMethod.
+  const {
+    updatedAt: _u,
+    name: _n,
+    usePar: _p,
+    redeemCodeAutomatically: _r,
+    clients: _c,
+    signInClient: _s,
+    introspectionClient: _i,
+    extraTokenParams: _t,
+    ...requestFields
+  } = profile
   const key = JSON.stringify([requestFields, org, overrides])
   const remaining = useCountdown(par?.pending?.par)
 
@@ -204,6 +215,15 @@ export function RequestPreview({ profile, org, overrides, label, startLabel, sho
       </section>
       )}
 
+      {!showEditor && draft !== undefined && (
+        <div className={cx('flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-[13px]', edited.error ? 'border-red-300 text-red-800 dark:border-red-900 dark:text-red-300' : 'border-amber-300 text-amber-900 dark:border-amber-900 dark:text-amber-200')}>
+          <span className="flex-1">{edited.error ? `The edited JSON is not valid: ${edited.error} Open Edit as JSON to fix it.` : 'Your JSON edits are applied to this request.'}</span>
+          <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => setDraft(undefined)}>
+            <RotateCcw size={12} /> Reset edits
+          </button>
+        </div>
+      )}
+
       {usePar && (
         <div className="card space-y-2 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -299,8 +319,14 @@ function Check({ on, onChange, children, title }: { on: boolean; onChange: (v: b
   )
 }
 
-/** The sign-in page: one form, one button, and the result below. */
+/** The sign-in page: one form, one button, and the result below. Remounted per configuration, so
+ * discovery messages and open panels never carry over from another server. */
 export function AuthorizeView() {
+  const id = useAppState((s) => s.activeProfileId)
+  return <SignInPage key={id} />
+}
+
+function SignInPage() {
   const profile = useAppState((s) => activeProfile(s))
   const secret = useAppState((s) => clientSecretOf(profile.id, profile.signInClient, s))
   const [orgId, setOrgId] = useState('')
@@ -350,7 +376,7 @@ export function AuthorizeView() {
                 placeholder={preset.issuerPlaceholder}
                 spellCheck={false}
                 autoFocus={!profile.issuer}
-                onChange={(e) => up(serverPatch(profile, { issuer: e.target.value }))}
+                onChange={(e) => changeIssuer(profile, e.target.value)}
                 onBlur={() => void discovery.run()}
                 onKeyDown={(e) => e.key === 'Enter' && void discovery.run(true)}
               />
