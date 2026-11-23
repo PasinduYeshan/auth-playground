@@ -78,11 +78,11 @@ src/lib/oauth/      protocol core, framework-free and unit tested
   types.ts          Profile (saved, no secrets), TokenSet, SessionSecrets
 src/lib/store/      profiles (localStorage), token sets and unredeemed codes (sessionStorage), app store
 src/components/     shared UI: token viewer, HTTP exchange view, form controls
-src/views/          Setup, Server settings (ConfigPanel), Authorize, Callback, Other grants, Tokens, Organizations, Compare, HTTP log
+src/views/          Sign in (AuthorizeView), More settings (ConfigPanel), Callback, Other grants, Tokens (with Compare), Organizations, HTTP log
 src/lib/handoff.ts  hands an authorization response from the sign-in tab to the playground tab (BroadcastChannel)
 ```
 
-The authorization code flow runs as separate steps, each started by the user: edit the request (JSON; state, nonce and the PKCE challenge are generated and refreshed after each sign-in, values the user typed stay), push it to the PAR endpoint when the configuration asks for PAR (the browser then carries only `client_id` and `request_uri`), sign in, then redeem the code. Everything after the sign-in shows in the playground tab's Sign-ins list.
+The authorization code flow runs as separate steps, each started by the user: edit the request (JSON; state, nonce and the PKCE challenge are generated and refreshed after each sign-in, values the user typed stay), push it to the PAR endpoint when the configuration asks for PAR (the browser then carries only `client_id` and `request_uri`), sign in, then redeem the code. Everything after the sign-in shows below the form in the playground tab, as three steps: response, token request, tokens.
 
 Sign-in runs in a new tab so the playground keeps its state and several sign-ins can run at once. The tab is opened from the click (so pop-up blockers allow it) with `opener` cleared, so the sign-in page has no handle on the playground. The transaction (state, nonce, verifier) stays in the playground tab's `sessionStorage`. The callback page offers only the response parameters on a same-origin `BroadcastChannel`; the playground tab that holds the matching state takes it, checks it and answers, and the callback tab closes. If no tab answers within 1.5 s, the callback page completes the response itself when it holds the transaction (pop-ups blocked and the sign-in ran in the same tab, or a copied URL opened there) and returns to the playground; otherwise it says no tab is waiting.
 
@@ -126,7 +126,7 @@ Two HTML entries, `/` and `/callback/`, load the same bundle, so the redirect UR
 8. End-to-end test against a local ThunderID with two OUs and a shared public app.
 9. GitHub Pages workflow.
 
-**Done since**: client credentials, device authorization, token exchange, PAR, the step-by-step code flow, sign-in in a new tab with the response handed back, editable authorization and token requests, and a first-run setup screen.
+**Done since**: client credentials, device authorization, token exchange, PAR, the step-by-step code flow, sign-in in a new tab with the response handed back, editable authorization and token requests, and a single-form Sign in page in place of the setup screen and settings drawer.
 
 **Later**: CIBA, JAR, DPoP (via relay or a server change), `private_key_jwt`, optional relay, shareable configuration links.
 

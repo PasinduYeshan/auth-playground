@@ -13,6 +13,7 @@ import { displayUrl, isHttpUrl } from '../lib/oauth/url'
 import type { Profile, TokenSet } from '../lib/oauth/types'
 import { activeProfile, addTokenSet, removeTokenSet, setState, updateTokenSet, useAppState } from '../lib/store/appStore'
 import { clearTokenSets } from '../lib/store/tokens'
+import { CompareView } from './CompareView'
 
 export const LOGOUT_STATE_KEY = 'ap:logout-state'
 
@@ -326,7 +327,7 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
   )
 }
 
-function TokenSetDetail({ set }: { set: TokenSet }) {
+export function TokenSetDetail({ set }: { set: TokenSet }) {
   const profile = useAppState((s) => s.profiles.find((p) => p.id === set.profileId))
   if (!profile)
     return (
@@ -405,7 +406,7 @@ function TokenSetDetailFor({ set, profile }: { set: TokenSet; profile: Profile }
   )
 }
 
-export function TokensView() {
+function TokenSets() {
   const sets = useAppState((s) => s.tokenSets)
   const selectedId = useAppState((s) => s.selectedTokenSetId)
   const selected = sets.find((s) => s.id === selectedId) ?? sets[0]
@@ -423,7 +424,7 @@ export function TokensView() {
               onClick={() => {
                 if (confirm('Remove every token set and unredeemed code from this tab?')) {
                   clearTokenSets()
-                  setState({ tokenSets: [], selectedTokenSetId: undefined, codes: [], signIns: [], openCode: undefined })
+                  setState({ tokenSets: [], selectedTokenSetId: undefined, codes: [], signIns: [] })
                 }
               }}
             >
@@ -440,10 +441,28 @@ export function TokensView() {
           <TokenSetDetail key={selected.id} set={selected} />
         ) : (
           <Empty>
-            No tokens yet. Start a sign-in from <button type="button" className="text-indigo-600 underline" onClick={() => setState({ view: 'authorize' })}>Authorize</button>, or paste a token.
+            No tokens yet. Start a sign-in from <button type="button" className="text-indigo-600 underline" onClick={() => setState({ view: 'authorize' })}>Sign in</button>, or paste a token.
           </Empty>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Token sets, and side-by-side comparison of two of them. */
+export function TokensView() {
+  const [mode, setMode] = useState<'sets' | 'compare'>('sets')
+  return (
+    <div className="space-y-4">
+      <Tabs
+        value={mode}
+        onChange={setMode}
+        tabs={[
+          { id: 'sets', label: 'Token sets' },
+          { id: 'compare', label: 'Compare two' },
+        ]}
+      />
+      {mode === 'sets' ? <TokenSets /> : <CompareView />}
     </div>
   )
 }

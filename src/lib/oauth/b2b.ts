@@ -20,7 +20,7 @@ export function templateIssuer(profile: Profile): string {
   for (const ep of [profile.endpoints.authorization, profile.endpoints.token]) {
     if (isHttpUrl(ep)) return new URL(ep).origin
   }
-  throw new Error('Set the issuer URL in Server settings: the organization endpoints are built from it.')
+  throw new Error('Set the server base URL (the issuer) on the Sign in page: the organization endpoints are built from it.')
 }
 
 export interface OrgEndpoints {

@@ -1,14 +1,16 @@
-import { ExternalLink, Loader2, RefreshCw, RotateCcw, Send } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, Loader2, RefreshCw, RotateCcw, Send } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { HttpExchangeView } from '../components/HttpExchangeView'
-import { TokenRequestEditor } from '../components/TokenRequestEditor'
-import { Alert, CopyButton, cx } from '../components/ui'
+import { SignInResult } from '../components/SignIns'
+import { Alert, CopyButton, SecretInput, cx } from '../components/ui'
 import { ERROR_HINTS } from '../lib/errors'
-import { prepareAuthorization, pushAuthorization, startSignIn } from '../lib/flows'
+import { prepareAuthorization, pushAuthorization, runDiscovery, startSignIn } from '../lib/flows'
+import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
 import { carryDraft, jsonToParams, paramsToJson, withParams, type AuthorizationRequest, type ParResult, type PendingAuthorization } from '../lib/oauth/authorize'
 import type { Organization, Profile } from '../lib/oauth/types'
 import { displayUrl, isHttpUrl } from '../lib/oauth/url'
-import { activeProfile, setState, updateProfile, useAppState } from '../lib/store/appStore'
+import { activeProfile, secretsFor, setSecrets, updateProfile, useAppState } from '../lib/store/appStore'
+import { MoreSettings, ScopeChips } from './ConfigPanel'
 
 /** Seconds until a pushed request expires, ticking once a second from the moment of the push. */
 function useCountdown(window: { pushedAt: number; expiresAt: number } | undefined): number | undefined {
@@ -48,12 +50,14 @@ function openSignIn(pending: PendingAuthorization): void {
 }
 
 /** The authorization request as editable JSON, with the PAR step and sign-in. */
-export function RequestPreview({ profile, org, overrides, label, startLabel }: {
+export function RequestPreview({ profile, org, overrides, label, startLabel, showEditor = true }: {
   profile: Profile
   org?: Organization
   overrides?: [string, string][]
   label?: string
   startLabel?: string
+  /** Off: the request is sent as generated, without the JSON editor on screen. */
+  showEditor?: boolean
 }) {
   const [req, setReq] = useState<AuthorizationRequest>()
   const current = useRef<AuthorizationRequest | undefined>(undefined)
@@ -134,6 +138,7 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
 
   return (
     <div className="space-y-3">
+      {showEditor && (
       <section className="card overflow-hidden">
         <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 px-3.5 py-2.5 dark:border-zinc-800">
           <span className="font-semibold">Authorization request</span>
@@ -196,13 +201,14 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
           </button>
         </div>
       </section>
+      )}
 
       {usePar && (
         <div className="card space-y-2 p-3.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">Push the request first (RFC 9126)</span>
             <span className="text-xs text-zinc-500">
-              to <span className="code">{profile.endpoints.par ? displayUrl(profile.endpoints.par) : '(no PAR endpoint: set it in Server settings)'}</span>
+              to <span className="code">{profile.endpoints.par ? displayUrl(profile.endpoints.par) : '(no PAR endpoint: set it under More settings)'}</span>
             </span>
           </div>
           {!par?.pending && (
@@ -234,7 +240,7 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
 
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className="btn-primary h-10 px-4 font-semibold" disabled={!target || expired} title={usePar && !par?.pending ? 'Push the request first' : undefined} onClick={signIn}>
-          <ExternalLink size={16} /> {startLabel ?? 'Sign in in new tab'}
+          <ExternalLink size={16} /> {startLabel ?? 'Send request'}
         </button>
         {target && !expired && (
           <CopyButton value={target.authorizationUrl} label="Copy URL" className="h-10 border border-zinc-200 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" onCopy={() => { startSignIn(target); regenerate() }} />
@@ -247,53 +253,160 @@ export function RequestPreview({ profile, org, overrides, label, startLabel }: {
   )
 }
 
-function Chip({ on, onChange, children, title }: { on: boolean; onChange: (v: boolean) => void; children: React.ReactNode; title?: string }) {
+const DEFAULT_NAMES = ['My first configuration', 'New configuration']
+
+/** Runs discovery when the base URL is left with a new value, and says what it found. */
+function useDiscovery(profile: Profile) {
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ tone: 'green' | 'amber' | 'red'; text: string }>()
+  const tried = useRef<string | undefined>(undefined)
+  const preset = presetById(profile.preset)
+
+  const run = async (force = false) => {
+    const issuer = profile.issuer.trim()
+    if (!isHttpUrl(issuer) || (!force && tried.current === issuer)) return
+    tried.current = issuer
+    if (DEFAULT_NAMES.includes(profile.name)) updateProfile(profile.id, { name: `${preset.id === 'generic' ? 'Server' : preset.name} · ${displayUrl(issuer).replace(/\/+$/, '')}` })
+    setBusy(true)
+    setMsg(undefined)
+    try {
+      const r = await runDiscovery(profile)
+      if (r.error)
+        setMsg(
+          preset.endpointPaths
+            ? { tone: 'amber', text: `No discovery document (${r.error}). Using the usual ${preset.name} endpoints.` }
+            : { tone: 'red', text: `No discovery document (${r.error}). Choose the server type, or enter the endpoints under More settings.` },
+        )
+      else setMsg({ tone: r.warnings.length ? 'amber' : 'green', text: r.warnings.length ? r.warnings.join(' ') : 'Endpoints loaded from discovery.' })
+    } catch (e) {
+      setMsg({ tone: 'red', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return { busy, msg, run }
+}
+
+const TONE = { green: 'text-emerald-700 dark:text-emerald-400', amber: 'text-amber-700 dark:text-amber-400', red: 'text-red-700 dark:text-red-400' }
+
+function Check({ on, onChange, children, title }: { on: boolean; onChange: (v: boolean) => void; children: React.ReactNode; title?: string }) {
   return (
-    <label className={on ? 'chip-on' : 'chip'} title={title}>
-      <input type="checkbox" className="accent-indigo-600" checked={on} onChange={(e) => onChange(e.target.checked)} />
+    <label className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-zinc-700 select-none dark:text-zinc-300" title={title}>
+      <input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={on} onChange={(e) => onChange(e.target.checked)} />
       {children}
     </label>
   )
 }
 
+/** The sign-in page: one form, one button, and the result below. */
 export function AuthorizeView() {
   const profile = useAppState((s) => activeProfile(s))
-  const openCode = useAppState((s) => s.openCode)
+  const secret = useAppState((s) => secretsFor(profile.id, s).clientSecret)
   const [orgId, setOrgId] = useState('')
+  const [more, setMore] = useState(false)
+  const [json, setJson] = useState(false)
   const org = profile.b2b.organizations.find((o) => o.id === orgId)
   const problems = profileProblems(profile)
+  const preset = presetById(profile.preset)
+  const discovery = useDiscovery(profile)
   const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
-
-  if (openCode) return <TokenRequestEditor key={openCode.id} received={openCode} />
+  const needsSecret = profile.clientAuthMethod !== 'none'
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold">Sign-in with authorization code</h2>
-        <p className="text-sm text-zinc-500">Edit the request, then sign in in a new tab. Each sign-in shows up under Sign-ins, where you decide what happens next.</p>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className={profile.pkceMethod === 'S256' ? 'chip-on' : 'chip'} title="Change the PKCE method in Server settings">
-          PKCE {profile.pkceMethod}
-        </span>
-        <Chip on={profile.useNonce} onChange={(v) => up({ useNonce: v })}>
-          nonce
-        </Chip>
-        <Chip on={profile.usePar} onChange={(v) => up({ usePar: v })} title={profile.endpoints.par ? 'RFC 9126: send the parameters in a back-channel POST, then redirect with a request_uri.' : 'The server advertises no PAR endpoint. Set one in Server settings.'}>
-          Push first (PAR)
-        </Chip>
-        <Chip on={profile.redeemCodeAutomatically} onChange={(v) => up({ redeemCodeAutomatically: v })} title="Off: the code waits under Sign-ins until you decide.">
-          Redeem code automatically
-        </Chip>
-        <span className={profile.expectIss ? 'chip-on' : 'chip'} title="RFC 9207: from discovery (authorization_response_iss_parameter_supported)">
-          {profile.expectIss ? 'iss required' : 'iss checked when sent'}
-        </span>
-        {profile.b2b.organizations.length > 0 && (
-          <>
-            <span className="h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
-            <label className="chip pr-1">
+    <div className="mx-auto w-full max-w-5xl space-y-4">
+      <section aria-label="Sign-in request" className="card space-y-4 p-4 sm:p-5">
+        <div className="grid gap-x-4 gap-y-3 md:grid-cols-2">
+          <div>
+            <label htmlFor="f-issuer" className="label">
+              Server base URL
+            </label>
+            <div className="flex gap-1.5">
+              <select
+                aria-label="Server type"
+                className="input w-32 shrink-0"
+                value={preset.id}
+                onChange={(e) => {
+                  const next = presetById(e.target.value)
+                  up({ ...serverPatch(profile, { preset: next.id }), b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
+                }}
+              >
+                {PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id === 'generic' ? 'Any server' : p.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                id="f-issuer"
+                className={cx('input code', !profile.issuer && 'border-indigo-400 ring-2 ring-indigo-500/20')}
+                value={profile.issuer}
+                placeholder={preset.issuerPlaceholder}
+                spellCheck={false}
+                autoFocus={!profile.issuer}
+                onChange={(e) => up(serverPatch(profile, { issuer: e.target.value }))}
+                onBlur={() => void discovery.run()}
+                onKeyDown={(e) => e.key === 'Enter' && void discovery.run(true)}
+              />
+            </div>
+            <div className="mt-1 flex min-h-4 items-center gap-1.5 text-[11px] text-zinc-500">
+              {discovery.busy ? (
+                <>
+                  <Loader2 size={11} className="animate-spin" /> Reading the discovery document…
+                </>
+              ) : discovery.msg ? (
+                <span className={TONE[discovery.msg.tone]}>{discovery.msg.text}</span>
+              ) : (
+                <span>{preset.issuerHint}</span>
+              )}
+              {!discovery.busy && isHttpUrl(profile.issuer) && (
+                <button type="button" className="ml-auto shrink-0 text-indigo-700 hover:underline dark:text-indigo-300" onClick={() => void discovery.run(true)}>
+                  Discover again
+                </button>
+              )}
+            </div>
+          </div>
+          <label className="block">
+            <span className="label">Client ID</span>
+            <input className="input code" value={profile.clientId} spellCheck={false} placeholder="The client registered for this playground" onChange={(e) => up({ clientId: e.target.value })} />
+          </label>
+          <div>
+            <label htmlFor="f-scope" className="label">
+              Scope
+            </label>
+            <input id="f-scope" className="input code" value={profile.scope} spellCheck={false} onChange={(e) => up({ scope: e.target.value })} />
+            <div className="mt-1.5">
+              <ScopeChips profile={profile} />
+            </div>
+          </div>
+          <div>
+            <span className="label">Redirect URI (register this on the client)</span>
+            <div className="flex items-center gap-1.5">
+              <code className="code input flex items-center truncate bg-zinc-50 text-zinc-600 dark:bg-zinc-950 dark:text-zinc-400">{profile.redirectUri}</code>
+              <CopyButton value={profile.redirectUri} label="Copy" className="h-9 shrink-0 border border-zinc-200 dark:border-zinc-700" />
+            </div>
+          </div>
+          {needsSecret && (
+            <label className="block md:col-span-2">
+              <span className="label">Client secret ({profile.clientAuthMethod}; kept in memory for this tab only)</span>
+              <SecretInput value={secret} onChange={(v) => setSecrets(profile.id, { clientSecret: v })} />
+            </label>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+          <Check on={profile.useNonce} onChange={(v) => up({ useNonce: v })} title="OpenID Connect: a random value the ID token must echo">
+            Nonce
+          </Check>
+          <Check on={profile.usePar} onChange={(v) => up({ usePar: v })} title={profile.endpoints.par ? 'RFC 9126: send the parameters in a back-channel POST, then redirect with a request_uri.' : 'The server advertises no PAR endpoint. Set one under More settings.'}>
+            Push first (PAR)
+          </Check>
+          <Check on={profile.redeemCodeAutomatically} onChange={(v) => up({ redeemCodeAutomatically: v })} title="Off: the code waits until you choose Get tokens.">
+            Get tokens right away
+          </Check>
+          {profile.b2b.organizations.length > 0 && (
+            <label className="inline-flex items-center gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
               Organization
-              <select className="input h-7 w-auto border-0 bg-transparent py-0 text-[13px] dark:bg-transparent" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
+              <select className="input h-8 w-auto py-0" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
                 <option value="">none</option>
                 {profile.b2b.organizations.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -302,23 +415,38 @@ export function AuthorizeView() {
                 ))}
               </select>
             </label>
+          )}
+          <span className="flex-1" />
+          <button type="button" className="btn-ghost px-2 py-1 text-[13px] text-indigo-700 dark:text-indigo-300" aria-expanded={more} onClick={() => setMore(!more)}>
+            More settings {more ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          <button type="button" className={cx('btn-ghost px-2 py-1 text-[13px] text-indigo-700 dark:text-indigo-300', json && 'bg-indigo-50 dark:bg-indigo-950')} aria-pressed={json} onClick={() => setJson(!json)}>
+            Edit as JSON
+          </button>
+        </div>
+
+        {more && (
+          <div className="-mx-4 border-y border-zinc-100 sm:-mx-5 dark:border-zinc-800">
+            <MoreSettings />
+          </div>
+        )}
+
+        {problems.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" className="btn-primary h-10 px-4 font-semibold" disabled>
+              <ExternalLink size={16} /> Send request
+            </button>
+            <span className="text-[13px] text-zinc-500">{!profile.issuer ? 'Enter the server base URL to start.' : problems[0]}</span>
+          </div>
+        ) : (
+          <>
+            {needsSecret && !secret && <p className="text-[13px] text-amber-700 dark:text-amber-400">The client secret is empty: the token request will fail until you enter it.</p>}
+            <RequestPreview profile={profile} org={org} showEditor={json} />
           </>
         )}
-      </div>
-      {problems.length > 0 ? (
-        <Alert tone="blue">
-          <ul className="list-inside list-disc">
-            {problems.map((p) => (
-              <li key={p}>{p}</li>
-            ))}
-          </ul>
-          <button type="button" className="btn-ghost mt-1 px-0 text-indigo-700 dark:text-indigo-300" onClick={() => setState({ settingsOpen: true })}>
-            Open Server settings
-          </button>
-        </Alert>
-      ) : (
-        <RequestPreview profile={profile} org={org} />
-      )}
+      </section>
+
+      <SignInResult />
     </div>
   )
 }

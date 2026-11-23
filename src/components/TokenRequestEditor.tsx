@@ -1,4 +1,4 @@
-import { ArrowLeft, Eye, EyeOff, Loader2, Plus, RotateCcw, Send, X } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Plus, RotateCcw, Send, X } from 'lucide-react'
 import { useState } from 'react'
 import { ERROR_HINTS } from '../lib/errors'
 import { draftCurl, redeemCode, tokenRequestDraft, type RedeemOutcome, type TokenRequestDraft } from '../lib/flows'
@@ -59,7 +59,7 @@ function RowsEditor({ rows, onChange, reveal, addLabel }: { rows: Row[]; onChang
 }
 
 /** The token request for a received code, shown before it is sent and editable in every part. */
-export function TokenRequestEditor({ received }: { received: ReceivedCode }) {
+export function TokenRequestEditor({ received, onSent }: { received: ReceivedCode; onSent?: (o: RedeemOutcome) => void }) {
   const reveal = useAppState((s) => s.revealSecrets)
   const [initial] = useState<TokenRequestDraft>(() => tokenRequestDraft(received))
   const [url, setUrl] = useState(initial.url)
@@ -84,6 +84,7 @@ export function TokenRequestEditor({ received }: { received: ReceivedCode }) {
     setOutcome(o)
     if (o.tokenSet) setTokenSetId(o.tokenSet.id)
     setBusy(false)
+    onSent?.(o)
   }
 
   const raw = [
@@ -99,18 +100,6 @@ export function TokenRequestEditor({ received }: { received: ReceivedCode }) {
 
   return (
     <div className="space-y-4">
-      <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1.5 text-[13px] text-zinc-500">
-        <button type="button" className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline dark:text-indigo-400" onClick={() => setState({ openCode: undefined })}>
-          <ArrowLeft size={14} /> Back to the request
-        </button>
-        <span aria-hidden="true">/</span>
-        <span>{received.pending.label ?? 'Sign-in'}, code received {new Date(received.receivedAt).toLocaleTimeString()}</span>
-      </nav>
-      <div>
-        <h2 className="text-xl font-semibold">Redeem the code</h2>
-        <p className="text-sm text-zinc-500">This is the exact request that will be sent. Change anything, including values the spec says not to, and see what the server says.</p>
-      </div>
-
       <div className="grid items-start gap-4 2xl:grid-cols-2">
         <section aria-label="Token request" className="card overflow-hidden">
           <div className="flex items-center gap-2 border-b border-zinc-200 p-3 dark:border-zinc-800">
@@ -165,7 +154,7 @@ export function TokenRequestEditor({ received }: { received: ReceivedCode }) {
             {outcome?.grant && <span className="text-xs text-zinc-500">{outcome.grant.exchange.durationMs} ms, sent {sentTime}</span>}
             <span className="flex-1" />
             {tokenSetId && (
-              <button type="button" className="btn-ghost px-2 text-[13px] text-indigo-600 dark:text-indigo-400" onClick={() => setState({ view: 'tokens', selectedTokenSetId: tokenSetId, openCode: undefined })}>
+              <button type="button" className="btn-ghost px-2 text-[13px] text-indigo-600 dark:text-indigo-400" onClick={() => setState({ view: 'tokens', selectedTokenSetId: tokenSetId })}>
                 Open in Tokens
               </button>
             )}
@@ -186,7 +175,7 @@ export function TokenRequestEditor({ received }: { received: ReceivedCode }) {
                 {ERROR_HINTS[err.error] && <div className="mt-1 text-zinc-600 dark:text-zinc-400">{ERROR_HINTS[err.error]}</div>}
               </Alert>
             )}
-            {outcome?.tokenSet && <Alert tone="green">Tokens issued and saved. Open them in Tokens to decode, check, refresh or revoke them.</Alert>}
+            {outcome?.tokenSet && <Alert tone="green">Tokens issued. They are decoded and checked below, and kept under Tokens.</Alert>}
             {response && <JsonView value={response.json ?? response.body} className="max-h-[28rem]" />}
           </div>
         </section>

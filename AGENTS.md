@@ -23,8 +23,8 @@ Run `npm run lint`, `npm test` and `npm run build` before every commit. The `onl
 | `src/lib/oauth/` | Protocol core, with no React: `http.ts` (`tracedFetch`, masking), `authorize.ts` (request, PAR, callback), `client.ts` (token endpoint grants, UserInfo, introspection, revocation, logout), `discovery.ts`, `jwt.ts` (decode, WebCrypto verification, ID token checks), `pkce.ts`, `b2b.ts` (organizations), `presets.ts`, `types.ts` |
 | `src/lib/flows.ts` | Joins the protocol core to the store. Views call these functions. `errors.ts` holds plain-language hints for OAuth error codes |
 | `src/lib/store/` | `appStore.ts` (an external store read with `useAppState`), `profiles.ts` (saved configurations, file import and export), `tokens.ts` |
-| `src/views/` | One file per page: Authorize, Other grants (`GrantsView`), Tokens, Organizations, Compare, HTTP log; plus `SetupView` (first run), `ConfigPanel` (the Server settings drawer) and `CallbackView` (hands the response to the playground tab) |
-| `src/components/` | Shared UI (`ui.tsx`), `TokenViewer`, `HttpExchangeView`, `SignIns` (the Sign-ins list), `TokenRequestEditor` (the editable token request for a code) |
+| `src/views/` | One file per tab: Sign in (`AuthorizeView`, the form), Other grants (`GrantsView`), Tokens (with `CompareView`), Organizations, HTTP log; plus `ConfigPanel` (More settings and the Saved menu's `ProfileBar`) and `CallbackView` (hands the response to the playground tab) |
+| `src/components/` | Shared UI (`ui.tsx`), `TokenViewer`, `HttpExchangeView`, `SignIns` (the latest sign-in as response, token request and tokens steps), `TokenRequestEditor` (the editable token request for a code) |
 | `src/lib/handoff.ts` | Hands an authorization response from the sign-in tab to the playground tab over a `BroadcastChannel`; only response parameters cross, never the verifier |
 | `src/lib/oauth/__tests__/` | Unit tests |
 | `scripts/thunderid-setup.sh` | Prepares a ThunderID server with organizations, users and clients for every flow |

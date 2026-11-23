@@ -1,9 +1,8 @@
-import { Copy, Download, FileDown, FilePlus2, Loader2, Radar, Trash2, Upload } from 'lucide-react'
+import { Copy, Download, FileDown, FilePlus2, Trash2, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { KeyValueEditor } from '../components/KeyValueEditor'
 import { Alert, Badge, Field, SecretInput, Section, cx } from '../components/ui'
-import { runDiscovery } from '../lib/flows'
-import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
+import { presetById } from '../lib/oauth/presets'
 import { defaultRedirectUri, newProfile, type ClientAuthMethod, type Endpoints, type Profile } from '../lib/oauth/types'
 import { activeProfile, addProfile, addProfiles, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
 import { MAX_IMPORT_BYTES, exportFileName, exportProfiles, parseConfigFile } from '../lib/store/profiles'
@@ -37,7 +36,7 @@ function downloadJson(fileName: string, json: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function ProfileBar({ profile }: { profile: Profile }) {
+export function ProfileBar({ profile }: { profile: Profile }) {
   const profiles = useAppState((s) => s.profiles)
   const [exportOpen, setExportOpen] = useState(false)
   const [status, setStatus] = useState<{ tone: 'green' | 'red'; text: string }>()
@@ -137,7 +136,7 @@ function ProfileBar({ profile }: { profile: Profile }) {
   )
 }
 
-function ScopeChips({ profile }: { profile: Profile }) {
+export function ScopeChips({ profile }: { profile: Profile }) {
   const discovered = useAppState((s) => s.metadata[profile.id]?.scopes_supported)
   const extra = presetById(profile.preset).extraScopes
   const supported = discovered?.length ? [...new Set([...discovered, ...extra])] : undefined
@@ -170,69 +169,20 @@ function ScopeChips({ profile }: { profile: Profile }) {
   )
 }
 
-export function ConfigPanel() {
+/** Everything beyond the sign-in form: endpoints, client authentication, the rest of the
+ * authorization request, token request extras and the introspection client. */
+export function MoreSettings() {
   const profile = useAppState((s) => activeProfile(s))
   const secrets = useAppState((s) => secretsFor(profile.id, s))
   const metadata = useAppState((s) => s.metadata[profile.id])
-  const [discovering, setDiscovering] = useState(false)
-  const [discoveryMsg, setDiscoveryMsg] = useState<{ tone: 'green' | 'red' | 'amber'; text: string }>()
   const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
   const preset = presetById(profile.preset)
-
-  const doDiscover = async () => {
-    if (!profile.issuer) return
-    setDiscovering(true)
-    setDiscoveryMsg(undefined)
-    try {
-      const r = await runDiscovery(profile)
-      if (r.error) setDiscoveryMsg({ tone: 'red', text: `Discovery failed: ${r.error}. See the HTTP log.` })
-      else setDiscoveryMsg({ tone: r.warnings.length ? 'amber' : 'green', text: r.warnings.length ? r.warnings.join(' ') : 'Endpoints loaded from discovery.' })
-    } catch (e) {
-      setDiscoveryMsg({ tone: 'red', text: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setDiscovering(false)
-    }
-  }
 
   const supportsMethod = (m: ClientAuthMethod) => !metadata?.token_endpoint_auth_methods_supported || metadata.token_endpoint_auth_methods_supported.includes(m)
 
   return (
-    <div>
-      <ProfileBar profile={profile} />
-
-      <Section title="Provider" subtitle={metadata ? <Badge tone="green">discovered</Badge> : undefined}>
-        <Field label="Provider" hint="A preset fills defaults for a known server. Every value stays editable.">
-          <select
-            className="input"
-            value={preset.id}
-            onChange={(e) => {
-              const next = presetById(e.target.value)
-              up({ ...serverPatch(profile, { preset: next.id }), b2b: { ...next.b2b(), organizations: profile.b2b.organizations } })
-            }}
-          >
-            {PRESETS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Issuer / base URL" hint={preset.issuerHint}>
-          <div className="flex gap-1.5">
-            <input
-              className="input code"
-              value={profile.issuer}
-              placeholder={preset.issuerPlaceholder}
-              onChange={(e) => up(serverPatch(profile, { issuer: e.target.value }))}
-              onKeyDown={(e) => e.key === 'Enter' && void doDiscover()}
-            />
-            <button type="button" className="btn-primary shrink-0" onClick={() => void doDiscover()} disabled={!profile.issuer || discovering}>
-              {discovering ? <Loader2 size={15} className="animate-spin" /> : <Radar size={15} />}
-              Discover
-            </button>
-          </div>
-        </Field>
-        {discoveryMsg && <Alert tone={discoveryMsg.tone}>{discoveryMsg.text}</Alert>}
+    <div className="grid items-start gap-x-6 xl:grid-cols-2">
+      <Section title="Endpoints" subtitle={metadata ? <Badge tone="green">discovered</Badge> : preset.endpointPaths ? `${preset.name} paths` : undefined}>
         {preset.notes.length > 0 && (
           <details className="rounded-lg bg-zinc-50 px-3 py-2 text-xs dark:bg-zinc-950">
             <summary className="cursor-pointer font-medium text-zinc-600 select-none dark:text-zinc-400">Notes for {preset.name}</summary>
@@ -243,13 +193,7 @@ export function ConfigPanel() {
             </ul>
           </details>
         )}
-        <div className="space-y-2 pt-1">
-          <div className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-            Endpoints{' '}
-            <span className="font-normal text-zinc-500">
-              {metadata ? '(from discovery)' : preset.endpointPaths ? `(filled from the base URL with ${preset.name} paths)` : '(press Discover, or enter them)'}
-            </span>
-          </div>
+        <div className="space-y-2">
           {ENDPOINT_LABELS.map(([key, label]) => (
             <Field key={key} label={label}>
               <input className="input code" value={profile.endpoints[key]} spellCheck={false} onChange={(e) => up({ endpoints: { ...profile.endpoints, [key]: e.target.value } })} />
@@ -258,10 +202,7 @@ export function ConfigPanel() {
         </div>
       </Section>
 
-      <Section title="Client">
-        <Field label="Client ID">
-          <input className="input code" value={profile.clientId} onChange={(e) => up({ clientId: e.target.value })} placeholder="auth-playground" />
-        </Field>
+      <Section title="Client authentication">
         <Field label="Client authentication">
           <select className="input" value={profile.clientAuthMethod} onChange={(e) => up({ clientAuthMethod: e.target.value as ClientAuthMethod })}>
             {AUTH_METHODS.map((m) => (
@@ -274,9 +215,6 @@ export function ConfigPanel() {
         </Field>
         {profile.clientAuthMethod !== 'none' && (
           <>
-            <Field label="Client secret" hint="Kept in memory for this tab only. Never saved or exported.">
-              <SecretInput value={secrets.clientSecret} onChange={(v) => setSecrets(profile.id, { clientSecret: v })} />
-            </Field>
             <Alert tone="amber">
               A secret in a browser is for testing only. Use a test client, never a production one.
               {profile.clientAuthMethod === 'client_secret_basic' &&
@@ -286,7 +224,7 @@ export function ConfigPanel() {
         )}
       </Section>
 
-      <Section title="Authorization request">
+      <Section title="More request parameters">
         <Field label="Redirect URI" hint="Register this exact value on the client.">
           <div className="flex gap-1.5">
             <input className="input code" value={profile.redirectUri} onChange={(e) => up({ redirectUri: e.target.value })} />
@@ -297,10 +235,6 @@ export function ConfigPanel() {
             )}
           </div>
         </Field>
-        <Field label="Scope">
-          <input className="input code" value={profile.scope} onChange={(e) => up({ scope: e.target.value })} />
-        </Field>
-        <ScopeChips profile={profile} />
         <Field label="Resource indicators (RFC 8707)" hint="One per line. All are sent on the authorization request; the first on the token request.">
           <textarea
             className="input code h-16"
@@ -346,9 +280,6 @@ export function ConfigPanel() {
           <Field label="ui_locales">
             <input className="input code" value={profile.uiLocales} onChange={(e) => up({ uiLocales: e.target.value })} />
           </Field>
-          <label className="mt-5 flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={profile.useNonce} onChange={(e) => up({ useNonce: e.target.checked })} /> Send nonce
-          </label>
         </div>
         {profile.pkceMethod === 'plain' && <Alert tone="amber">plain PKCE gives no protection if the request is observed. Many servers refuse it.</Alert>}
         {profile.responseMode === 'form_post' && (

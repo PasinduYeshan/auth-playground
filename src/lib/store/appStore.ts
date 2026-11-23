@@ -46,10 +46,6 @@ export interface AppState {
   codes: ReceivedCode[]
   /** Sign-ins started from this tab, newest first. */
   signIns: SignIn[]
-  /** The received code whose token request is open in the editor. */
-  openCode?: ReceivedCode
-  /** The server settings drawer. */
-  settingsOpen: boolean
   exchanges: HttpExchange[]
   view: ViewName
   revealSecrets: boolean
@@ -112,7 +108,6 @@ function initialState(): AppState {
     selectedTokenSetId: tokenSets[0]?.id,
     codes: loadCodes(),
     signIns: loadSignIns(),
-    settingsOpen: false,
     exchanges: loadExchanges(),
     view: viewFromHash(),
     revealSecrets: false,
@@ -248,5 +243,5 @@ export function updateSignIn(id: string, patch: Partial<SignIn>): void {
 }
 
 export function removeSignIn(id: string): void {
-  setState((s) => ({ signIns: s.signIns.filter((x) => x.id !== id), codes: s.codes.filter((c) => c.id !== id), openCode: s.openCode?.id === id ? undefined : s.openCode }))
+  setState((s) => ({ signIns: s.signIns.filter((x) => x.id !== id), codes: s.codes.filter((c) => c.id !== id) }))
 }

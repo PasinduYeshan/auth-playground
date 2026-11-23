@@ -9,7 +9,7 @@ Live: <https://auth-playground.yeshandev.com>
 ## What it does
 
 - **Authorization Code with PKCE, one step at a time**: discovery, configurable endpoints, scopes (with chips from `scopes_supported`), RFC 8707 resources, prompt, max_age, login_hint, acr_values, ui_locales and any extra parameter. The request is editable JSON: change, add or remove any parameter; state, nonce and the PKCE challenge are generated for each sign-in. Optionally push the request first (PAR, RFC 9126) and see the `request_uri` and its expiry before signing in.
-- **Sign-in in its own tab**: each sign-in opens a new tab, and the response comes back to the playground, so its state stays put and several sign-ins can run at once. A Sign-ins list follows each one from waiting to code, tokens or error.
+- **Sign-in in its own tab**: each sign-in opens a new tab, and the response comes back to the playground, so its state stays put and several sign-ins can run at once. Below the form, the latest sign-in shows as three steps (response, token request, tokens), with earlier ones a click away.
 - **Callback checks**: single-use state, `iss` (RFC 9207), errors explained in plain words. The code is removed from the address bar at once. Then you decide: open the token request, which shows the exact request and lets you edit its URL, body and headers before sending; copy it as curl; or discard the code. Automatic redemption is a setting.
 - **Tokens**: decoded access, ID and refresh tokens; JWKS signature check (RS, PS, ES, EdDSA); ID token checks (iss, aud, azp, exp, nbf, iat, nonce, at_hash, c_hash); claim descriptions and times.
 - **Operations**: refresh, UserInfo (GET or POST), introspection, revocation (confirmed by introspection), RP-initiated logout.
@@ -17,8 +17,8 @@ Live: <https://auth-playground.yeshandev.com>
 - **Organizations (B2B)**: the organization goes in the endpoint path (`{issuer}/o/{org}/authorize`) or in a request parameter (`organization=...`), with configurable organization claims. Sign in to an organization, redeem at its token endpoint, switch silently with `prompt=none` or by token exchange (RFC 8693), list the user's organizations, and compare claims between any two token sets.
 - **Provider presets**: Generic OAuth 2.0 / OpenID Connect, and ThunderID. A preset fills organization handling, claim names and placeholders, and shows notes about the server. Every value stays editable.
 - **HTTP log**: every request and response, secrets masked unless revealed, copy as curl.
-- **First-run setup**: a new configuration asks for the issuer URL and client ID only; everything else comes from discovery. A preset that knows its server's paths (ThunderID) fills the base URL and the endpoints from it, so it works without discovery too; endpoints you change stay when the base URL changes. Switch configurations from the header; the full configuration, with every section open, is under Server settings.
-- **Saved configurations** in `localStorage`. Export one or all of them to a `.json` file, and import by choosing a file or dropping it on Server settings. Client secrets are never saved or exported.
+- **One form**: the Sign in page asks for the server base URL, client ID and scope, and runs discovery when you leave the URL field. A preset that knows its server's paths (ThunderID) fills the endpoints from the base URL, so it works without discovery too; endpoints you change stay when the base URL changes. Everything else is under More settings, and the request can be edited as JSON.
+- **Saved configurations** in `localStorage`. Export one or all of them to a `.json` file, and import by choosing a file or dropping it on the Saved menu in the header. Client secrets are never saved or exported.
 
 ## Screenshots
 
