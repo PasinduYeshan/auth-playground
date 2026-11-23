@@ -204,7 +204,8 @@ export function deleteProfile(id: string): void {
 }
 
 export function secretsFor(profileId: string, s: AppState = state): SessionSecrets {
-  return s.secrets[profileId] ?? { clientSecret: '', introspectionClientSecret: '' }
+  const saved: Partial<SessionSecrets> | undefined = s.secrets[profileId]
+  return { clientSecret: '', introspectionClientSecret: '', machineClientSecret: '', ...saved }
 }
 
 export function setSecrets(profileId: string, patch: Partial<SessionSecrets>): void {

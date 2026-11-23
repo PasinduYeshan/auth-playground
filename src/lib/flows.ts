@@ -23,9 +23,15 @@ export function profileOf(set: TokenSet): Profile {
   return profile
 }
 
-/** The client a token set was issued to: the configuration's, or the other client used in Other grants. */
+/** The configuration's machine client: a confidential client for grants with no user. */
+export function machineCredentialsFor(profile: Profile): ClientCredentials {
+  return { clientId: profile.machineClientId.trim(), method: profile.machineAuthMethod, clientSecret: secretsFor(profile.id).machineClientSecret }
+}
+
+/** The client a token set was issued to: the sign-in client, the machine client, or another client. */
 export function credentialsForSet(set: TokenSet, profile: Profile): ClientCredentials {
   if (!set.client || set.client.clientId === profile.clientId) return credentialsFor(profile)
+  if (set.client.clientId === profile.machineClientId.trim()) return machineCredentialsFor(profile)
   return { clientId: set.client.clientId, method: set.client.method, clientSecret: getState().otherClientSecrets[set.client.clientId] }
 }
 

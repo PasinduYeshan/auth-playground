@@ -107,6 +107,10 @@ export interface Profile {
   redeemCodeAutomatically: boolean
   /** Extra form fields for the token request. */
   extraTokenParams: KeyValue[]
+  /** A confidential client for grants with no user (client credentials) when the sign-in client is
+   * public. Its secret is never saved. */
+  machineClientId: string
+  machineAuthMethod: ClientAuthMethod
   /** Credentials for introspection when it needs a different (confidential) client. */
   introspectionClientId: string
   introspectionAuthMethod: ClientAuthMethod
@@ -156,6 +160,8 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
     usePar: false,
     redeemCodeAutomatically: false,
     extraTokenParams: [],
+    machineClientId: '',
+    machineAuthMethod: 'client_secret_post',
     introspectionClientId: '',
     introspectionAuthMethod: 'client_secret_basic',
     b2b: genericB2B(),
@@ -168,6 +174,7 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
 export interface SessionSecrets {
   clientSecret: string
   introspectionClientSecret: string
+  machineClientSecret: string
 }
 
 export interface TokenResponse {

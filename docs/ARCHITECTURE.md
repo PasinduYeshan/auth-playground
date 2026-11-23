@@ -88,7 +88,7 @@ Sign-in runs in a new tab so the playground keeps its state and several sign-ins
 
 The checked code is kept in `sessionStorage` until the user redeems it, copies the token request as curl (the client secret left as `$CLIENT_SECRET`), or discards it. Redeeming opens the token request editor: the exact URL, form fields and headers, all editable, sent as edited. A failed redemption leaves the code available so the request can be sent again (to see how the server treats a reused code); a successful one removes it. "Redeem the code automatically" restores the one-step behaviour.
 
-Grants without a redirect (client credentials, device authorization, token exchange) are functions in `lib/oauth/client.ts` built on `tracedFetch` and `applyClientAuth`, shown in the Other grants view; their tokens become ordinary token sets. Future grants (CIBA) follow the same pattern.
+Grants without a redirect (client credentials, device authorization, token exchange) are functions in `lib/oauth/client.ts` built on `tracedFetch` and `applyClientAuth`, shown in the Other grants view; their tokens become ordinary token sets. Each grant runs as the sign-in client or the configuration's machine client (`machineClientId`, `machineAuthMethod`; the secret is a session secret), and a token set remembers which client it was issued to, so refresh, introspection and revocation use the same one. Future grants (CIBA) follow the same pattern.
 
 ### 3.3 Security model
 
