@@ -82,6 +82,7 @@ export interface Profile {
   preset: string
   issuer: string
   endpoints: Endpoints
+  /** The sign-in client's ID and authentication method: always the same as its entry in `clients`. */
   clientId: string
   clientAuthMethod: ClientAuthMethod
   redirectUri: string
@@ -107,13 +108,12 @@ export interface Profile {
   redeemCodeAutomatically: boolean
   /** Extra form fields for the token request. */
   extraTokenParams: KeyValue[]
-  /** A confidential client for grants with no user (client credentials) when the sign-in client is
-   * public. Its secret is never saved. */
-  machineClientId: string
-  machineAuthMethod: ClientAuthMethod
-  /** Credentials for introspection when it needs a different (confidential) client. */
-  introspectionClientId: string
-  introspectionAuthMethod: ClientAuthMethod
+  /** The clients registered for this server, by name. Secrets are never saved (see SessionSecrets). */
+  clients: ClientConfig[]
+  /** The client sign-in uses (a ClientConfig id). `clientId` and `clientAuthMethod` mirror it. */
+  signInClient: string
+  /** The client introspection uses (a ClientConfig id); empty: the token's own client. */
+  introspectionClient: string
   b2b: B2BConfig
   updatedAt: number
 }
@@ -136,7 +136,7 @@ export function defaultRedirectUri(): string {
 }
 
 export function newProfile(partial: Partial<Profile> = {}): Profile {
-  return {
+  const base: Profile = {
     id: crypto.randomUUID(),
     name: 'New configuration',
     preset: 'generic',
@@ -160,21 +160,21 @@ export function newProfile(partial: Partial<Profile> = {}): Profile {
     usePar: false,
     redeemCodeAutomatically: false,
     extraTokenParams: [],
-    machineClientId: '',
-    machineAuthMethod: 'client_secret_post',
-    introspectionClientId: '',
-    introspectionAuthMethod: 'client_secret_basic',
+    clients: [],
+    signInClient: DEFAULT_CLIENT,
+    introspectionClient: '',
     b2b: genericB2B(),
     updatedAt: Date.now(),
     ...partial,
   }
+  if (!partial.clients?.length) base.clients = [{ id: DEFAULT_CLIENT, name: 'Default', clientId: base.clientId, authMethod: base.clientAuthMethod }]
+  return withSignInClient(base)
 }
 
 /** Secrets the user typed this session. Kept in memory only, keyed by profile ID. */
 export interface SessionSecrets {
-  clientSecret: string
-  introspectionClientSecret: string
-  machineClientSecret: string
+  /** Client secrets by ClientConfig id. */
+  clientSecrets: Record<string, string>
 }
 
 export interface TokenResponse {
@@ -213,4 +213,38 @@ export interface TokenSet {
   maxAge?: number
   /** Statuses learned from operations (revocation, introspection). */
   revoked?: { access?: number; refresh?: number }
+}
+
+/** A client registered for the server. Several can share one configuration (a browser app, a
+ * machine-to-machine client, a client for introspection); each is chosen where it is used. */
+export interface ClientConfig {
+  id: string
+  name: string
+  clientId: string
+  authMethod: ClientAuthMethod
+}
+
+export const DEFAULT_CLIENT = 'default'
+
+/** The profile with `clientId` and `clientAuthMethod` copied from the sign-in client, which always
+ * exists: the protocol code reads those two fields. */
+export function withSignInClient(profile: Profile): Profile {
+  const clients = profile.clients.length ? profile.clients : [{ id: DEFAULT_CLIENT, name: 'Default', clientId: profile.clientId, authMethod: profile.clientAuthMethod }]
+  const chosen = clients.find((c) => c.id === profile.signInClient) ?? clients[0]
+  const introspectionClient = clients.some((c) => c.id === profile.introspectionClient) ? profile.introspectionClient : ''
+  return { ...profile, clients, signInClient: chosen.id, clientId: chosen.clientId, clientAuthMethod: chosen.authMethod, introspectionClient }
+}
+
+/** Applies a change to a profile. Setting `clientId` or `clientAuthMethod` edits the sign-in client. */
+export function patchProfile(profile: Profile, patch: Partial<Profile>): Profile {
+  let next: Profile = { ...profile, ...patch }
+  if (!patch.clients && (patch.clientId !== undefined || patch.clientAuthMethod !== undefined)) {
+    next = {
+      ...next,
+      clients: next.clients.map((c) =>
+        c.id === next.signInClient ? { ...c, clientId: patch.clientId ?? c.clientId, authMethod: patch.clientAuthMethod ?? c.authMethod } : c,
+      ),
+    }
+  }
+  return withSignInClient(next)
 }

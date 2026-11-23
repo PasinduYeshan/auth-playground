@@ -1,17 +1,13 @@
-import { Copy, Download, FileDown, FilePlus2, Trash2, Upload } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Copy, Download, FileDown, FilePlus2, Plus, Trash2, Upload } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ClientEditor } from '../components/Clients'
 import { KeyValueEditor } from '../components/KeyValueEditor'
-import { Alert, Badge, Field, SecretInput, Section, cx } from '../components/ui'
+import { addClient, removeClient } from '../lib/clients'
+import { Alert, Badge, Field, cx } from '../components/ui'
 import { presetById } from '../lib/oauth/presets'
 import { defaultRedirectUri, newProfile, type ClientAuthMethod, type Endpoints, type Profile } from '../lib/oauth/types'
-import { activeProfile, addProfile, addProfiles, deleteProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
+import { activeProfile, addProfile, addProfiles, deleteProfile, setState, updateProfile, useAppState } from '../lib/store/appStore'
 import { MAX_IMPORT_BYTES, exportFileName, exportProfiles, parseConfigFile } from '../lib/store/profiles'
-
-const AUTH_METHODS: { id: ClientAuthMethod; label: string }[] = [
-  { id: 'none', label: 'none (public client)' },
-  { id: 'client_secret_post', label: 'client_secret_post' },
-  { id: 'client_secret_basic', label: 'client_secret_basic' },
-]
 
 const ENDPOINT_LABELS: [keyof Endpoints, string][] = [
   ['authorization', 'Authorization'],
@@ -171,9 +167,33 @@ export function ScopeChips({ profile }: { profile: Profile }) {
 
 /** Everything beyond the sign-in form: endpoints, client authentication, the rest of the
  * authorization request, token request extras and the introspection client. */
-export function MoreSettings() {
+/** One group of settings: a card that opens to show its fields, closed until clicked. */
+function Group({ title, about, badge, children, defaultOpen = false }: { title: string; about: string; badge?: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const ref = useRef<HTMLElement>(null)
+  // Opened on request (Manage clients): bring it into view.
+  useEffect(() => {
+    if (defaultOpen) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [defaultOpen])
+  return (
+    <section ref={ref} className="card scroll-mt-20 overflow-hidden">
+      <button type="button" className="flex w-full items-start gap-2.5 px-4 py-3 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/60" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-zinc-500" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-zinc-500" />}
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="font-semibold">{title}</span>
+            {badge}
+          </span>
+          <span className="block text-xs text-zinc-500">{about}</span>
+        </span>
+      </button>
+      {open && <div className="space-y-3 border-t border-zinc-100 px-4 py-3 dark:border-zinc-800">{children}</div>}
+    </section>
+  )
+}
+
+export function MoreSettings({ openClients = false }: { openClients?: boolean }) {
   const profile = useAppState((s) => activeProfile(s))
-  const secrets = useAppState((s) => secretsFor(profile.id, s))
   const metadata = useAppState((s) => s.metadata[profile.id])
   const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
   const preset = presetById(profile.preset)
@@ -181,8 +201,8 @@ export function MoreSettings() {
   const supportsMethod = (m: ClientAuthMethod) => !metadata?.token_endpoint_auth_methods_supported || metadata.token_endpoint_auth_methods_supported.includes(m)
 
   return (
-    <div className="grid items-start gap-x-6 xl:grid-cols-2">
-      <Section title="Endpoints" subtitle={metadata ? <Badge tone="green">discovered</Badge> : preset.endpointPaths ? `${preset.name} paths` : undefined}>
+    <div className="space-y-2">
+      <Group title="Endpoints" about="Where each request goes. Filled by discovery or from the base URL; edit any of them." badge={metadata ? <Badge tone="green">discovered</Badge> : preset.endpointPaths ? <Badge>{preset.name} paths</Badge> : undefined}>
         {preset.notes.length > 0 && (
           <details className="rounded-lg bg-zinc-50 px-3 py-2 text-xs dark:bg-zinc-950">
             <summary className="cursor-pointer font-medium text-zinc-600 select-none dark:text-zinc-400">Notes for {preset.name}</summary>
@@ -200,31 +220,29 @@ export function MoreSettings() {
             </Field>
           ))}
         </div>
-      </Section>
-
-      <Section title="Client authentication">
-        <Field label="Client authentication">
-          <select className="input" value={profile.clientAuthMethod} onChange={(e) => up({ clientAuthMethod: e.target.value as ClientAuthMethod })}>
-            {AUTH_METHODS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-                {supportsMethod(m.id) ? '' : ' (not advertised)'}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {profile.clientAuthMethod !== 'none' && (
-          <>
-            <Alert tone="amber">
-              A secret in a browser is for testing only. Use a test client, never a production one.
-              {profile.clientAuthMethod === 'client_secret_basic' &&
-                ' client_secret_basic sends an Authorization header, which needs a CORS preflight. If the token endpoint does not answer preflight, use client_secret_post.'}
-            </Alert>
-          </>
+      </Group>
+      <Group defaultOpen={openClients} title="Clients" about="The clients registered for this server. Sign in, Other grants and introspection each pick one. Secrets stay in memory for this tab." badge={<Badge>{profile.clients.length}</Badge>}>
+        <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          {profile.clients.map((c) => (
+            <div key={c.id} className="space-y-1 py-3 first:pt-0">
+              {c.id === profile.signInClient && <Badge tone="blue">used for sign-in</Badge>}
+              <ClientEditor profile={profile} client={c} onRemove={profile.clients.length > 1 ? () => removeClient(profile, c.id) : undefined} />
+              {c.authMethod !== 'none' && !supportsMethod(c.authMethod) && <p className="text-xs text-amber-700 dark:text-amber-400">The server does not advertise {c.authMethod}.</p>}
+            </div>
+          ))}
+        </div>
+        <button type="button" className="btn-secondary text-[13px]" onClick={() => addClient(profile)}>
+          <Plus size={14} /> Add client
+        </button>
+        {profile.clients.some((c) => c.authMethod !== 'none') && (
+          <Alert tone="amber">
+            A secret in a browser is for testing only. Use test clients, never production ones.
+            {profile.clients.some((c) => c.authMethod === 'client_secret_basic') &&
+              ' client_secret_basic sends an Authorization header, which needs a CORS preflight. If the token endpoint does not answer preflight, use client_secret_post.'}
+          </Alert>
         )}
-      </Section>
-
-      <Section title="More request parameters">
+      </Group>
+      <Group title="Authorization request" about="The redirect URI, PKCE, response mode and the optional OpenID Connect parameters.">
         <Field label="Redirect URI" hint="Register this exact value on the client.">
           <div className="flex gap-1.5">
             <input className="input code" value={profile.redirectUri} onChange={(e) => up({ redirectUri: e.target.value })} />
@@ -288,38 +306,24 @@ export function MoreSettings() {
         <Field label="Extra authorization parameters" hint="For example claims, display, id_token_hint, authorization_details or vendor parameters.">
           <KeyValueEditor value={profile.extraAuthParams} onChange={(v) => up({ extraAuthParams: v })} />
         </Field>
-      </Section>
-
-      <Section title="Token request">
+      </Group>
+      <Group title="Token request" about="Extra form fields sent with every code exchange.">
         <Field label="Extra token request parameters">
           <KeyValueEditor value={profile.extraTokenParams} onChange={(v) => up({ extraTokenParams: v })} />
         </Field>
-      </Section>
-
-      <Section title="Introspection client" subtitle="optional">
-        <p className="text-xs text-zinc-500">Leave empty to introspect with the client above. Some servers accept public clients; others need a confidential one.</p>
-        <Field label="Client ID">
-          <input className="input code" value={profile.introspectionClientId} onChange={(e) => up({ introspectionClientId: e.target.value })} />
+      </Group>
+      <Group title="Introspection client" about="The client that calls the introspection endpoint. Some servers accept public clients; others need a confidential one.">
+        <Field label="Introspect with">
+          <select className="input" value={profile.introspectionClient} onChange={(e) => up({ introspectionClient: e.target.value })}>
+            <option value="">The token&apos;s own client</option>
+            {profile.clients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.clientId || 'no client ID'})
+              </option>
+            ))}
+          </select>
         </Field>
-        {profile.introspectionClientId && (
-          <>
-            <Field label="Client authentication">
-              <select className="input" value={profile.introspectionAuthMethod} onChange={(e) => up({ introspectionAuthMethod: e.target.value as ClientAuthMethod })}>
-                {AUTH_METHODS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {profile.introspectionAuthMethod !== 'none' && (
-              <Field label="Client secret" hint="Memory only.">
-                <SecretInput value={secrets.introspectionClientSecret} onChange={(v) => setSecrets(profile.id, { introspectionClientSecret: v })} />
-              </Field>
-            )}
-          </>
-        )}
-      </Section>
+      </Group>
     </div>
   )
 }

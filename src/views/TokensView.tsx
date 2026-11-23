@@ -254,7 +254,7 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
               disabled={!tokenFor(hint) || !!op.busy}
               onClick={() =>
                 void op.run('introspect', async () => {
-                  const r = await introspect(profile.endpoints.introspection, introspectionCredentialsFor(profile), tokenFor(hint)!, hint)
+                  const r = await introspect(profile.endpoints.introspection, introspectionCredentialsFor(profile, set), tokenFor(hint)!, hint)
                   return opResult(`Introspection (${hint.replace('_', ' ')})`, r, introspectionSummary(r.body))
                 })
               }
@@ -272,7 +272,7 @@ function Operations({ set, profile }: { set: TokenSet; profile: Profile }) {
                   // Confirm the outcome: a 200 also answers unknown tokens, so ask introspection.
                   let summary: ReactNode = r.ok ? <Badge tone="green">200: the server accepted the revocation</Badge> : undefined
                   if (r.ok && profile.endpoints.introspection) {
-                    const check = await introspect(profile.endpoints.introspection, introspectionCredentialsFor(profile), tokenFor(hint)!, hint)
+                    const check = await introspect(profile.endpoints.introspection, introspectionCredentialsFor(profile, set), tokenFor(hint)!, hint)
                     const active = (check.body as Record<string, unknown> | undefined)?.active
                     summary = (
                       <div className="flex flex-wrap items-center gap-2 text-sm">

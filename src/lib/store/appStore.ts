@@ -6,7 +6,7 @@ import type { ProviderMetadata } from '../oauth/discovery'
 import { onExchange, type HttpExchange } from '../oauth/http'
 import { redactExchange } from '../oauth/redact'
 import type { Jwks } from '../oauth/jwt'
-import { newProfile, type Profile, type SessionSecrets, type TokenSet } from '../oauth/types'
+import { newProfile, patchProfile, type Profile, type SessionSecrets, type TokenSet } from '../oauth/types'
 import { loadActiveProfileId, loadProfiles, saveActiveProfileId, saveProfiles } from './profiles'
 import { loadTokenSets, saveTokenSets } from './tokens'
 
@@ -26,6 +26,8 @@ export interface SignIn {
   finishedAt?: number
   /** Set when the request went out by PAR. */
   viaPar?: boolean
+  /** The organization signed in to, for an organization sign-in. */
+  organization?: string
   /** Whether the response carried iss (RFC 9207); it matched if the sign-in got this far. */
   iss?: boolean
 }
@@ -34,8 +36,6 @@ export interface AppState {
   profiles: Profile[]
   activeProfileId: string
   secrets: Record<string, SessionSecrets>
-  /** Secrets of other clients used in Other grants, by client ID. Memory only. */
-  otherClientSecrets: Record<string, string>
   metadata: Record<string, ProviderMetadata | undefined>
   jwks: Record<string, Jwks | undefined>
   /** The URI each cached JWKS was fetched from, to notice a changed JWKS URI. */
@@ -100,7 +100,6 @@ function initialState(): AppState {
     profiles,
     activeProfileId,
     secrets: {},
-    otherClientSecrets: {},
     metadata: {},
     jwks: {},
     jwksUri: {},
@@ -182,7 +181,7 @@ export function activeProfile(s: AppState = state): Profile {
 
 export function updateProfile(id: string, patch: Partial<Profile>): void {
   setState((s) => ({
-    profiles: s.profiles.map((p) => (p.id === id ? { ...p, ...patch, updatedAt: Date.now() } : p)),
+    profiles: s.profiles.map((p) => (p.id === id ? { ...patchProfile(p, patch), updatedAt: Date.now() } : p)),
   }))
 }
 
@@ -204,12 +203,19 @@ export function deleteProfile(id: string): void {
 }
 
 export function secretsFor(profileId: string, s: AppState = state): SessionSecrets {
-  const saved: Partial<SessionSecrets> | undefined = s.secrets[profileId]
-  return { clientSecret: '', introspectionClientSecret: '', machineClientSecret: '', ...saved }
+  return s.secrets[profileId] ?? { clientSecrets: {} }
 }
 
-export function setSecrets(profileId: string, patch: Partial<SessionSecrets>): void {
-  setState((s) => ({ secrets: { ...s.secrets, [profileId]: { ...secretsFor(profileId, s), ...patch } } }))
+/** The secret typed for one of a configuration's clients, or '' (memory only). */
+export function clientSecretOf(profileId: string, clientRef: string, s: AppState = state): string {
+  return secretsFor(profileId, s).clientSecrets[clientRef] ?? ''
+}
+
+export function setClientSecret(profileId: string, clientRef: string, secret: string): void {
+  setState((s) => {
+    const cur = secretsFor(profileId, s)
+    return { secrets: { ...s.secrets, [profileId]: { ...cur, clientSecrets: { ...cur.clientSecrets, [clientRef]: secret } } } }
+  })
 }
 
 export function addTokenSet(set: TokenSet): void {

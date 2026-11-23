@@ -1,8 +1,10 @@
-import { ExternalLink, KeyRound, MonitorSmartphone, Repeat, Square } from 'lucide-react'
+import { ExternalLink, KeyRound, MonitorSmartphone, Plus, Repeat, Square } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { HttpExchangeView } from '../components/HttpExchangeView'
-import { Alert, Badge, CopyButton, Field, SecretInput, Tabs, cx } from '../components/ui'
-import { credentialsFor, machineCredentialsFor, storeGrantTokens } from '../lib/flows'
+import { Alert, Badge, CopyButton, Field, Tabs, cx } from '../components/ui'
+import { ClientEditor } from '../components/Clients'
+import { addClient } from '../lib/clients'
+import { clientCredentials, storeGrantTokens } from '../lib/flows'
 import { orgTokenEndpoint } from '../lib/oauth/b2b'
 import {
   TOKEN_TYPES,
@@ -16,104 +18,82 @@ import {
   type GrantResult,
 } from '../lib/oauth/client'
 import type { HttpExchange } from '../lib/oauth/http'
-import type { ClientAuthMethod, GrantKind, Profile, TokenSet } from '../lib/oauth/types'
-import { activeProfile, secretsFor, setSecrets, setState, updateProfile, useAppState } from '../lib/store/appStore'
+import type { ClientConfig, GrantKind, Profile, TokenSet } from '../lib/oauth/types'
+import { activeProfile, secretsFor, setState, useAppState } from '../lib/store/appStore'
 
 type GrantTab = 'client_credentials' | 'device' | 'token_exchange'
 
-type ClientKind = 'signin' | 'machine'
-
-function ClientCard({ selected, onSelect, title, badge, detail, note, children }: {
+function ClientCard({ selected, onSelect, title, badge, detail, note }: {
   selected: boolean
   onSelect: () => void
   title: string
   badge?: ReactNode
   detail: ReactNode
   note?: ReactNode
-  children?: ReactNode
 }) {
   return (
-    <div className={cx('rounded-lg border p-3', selected ? 'border-indigo-500 bg-indigo-50/40 ring-1 ring-indigo-500 dark:bg-indigo-950/30' : 'border-zinc-200 dark:border-zinc-800')}>
-      <label className="flex cursor-pointer items-center gap-2">
+    <label className={cx('block cursor-pointer rounded-lg border p-3', selected ? 'border-indigo-500 bg-indigo-50/40 ring-1 ring-indigo-500 dark:bg-indigo-950/30' : 'border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700')}>
+      <span className="flex items-center gap-2">
         <input type="radio" className="accent-indigo-600" checked={selected} onChange={onSelect} />
         <span className="font-medium">{title}</span>
         <span className="flex-1" />
         {badge}
-      </label>
-      <div className="mt-1 pl-6 text-xs text-zinc-500">{detail}</div>
-      {note && <div className="mt-1 pl-6 text-xs text-zinc-500">{note}</div>}
-      {children}
-    </div>
+      </span>
+      <span className="mt-1 block pl-6 text-xs text-zinc-500">{detail}</span>
+      {note && <span className="mt-1 block pl-6 text-xs text-zinc-500">{note}</span>}
+    </label>
   )
 }
 
-/** The client these grants run as: the sign-in client, or the configuration's machine client (a
- * confidential client for grants with no user). The machine client's ID and method are saved with
- * the configuration; its secret stays in memory. */
-function ClientPicker({ profile, kind, onKind, tab }: { profile: Profile; kind: ClientKind; onKind: (k: ClientKind) => void; tab: GrantTab }) {
-  const secrets = useAppState((s) => secretsFor(profile.id, s))
-  const up = (patch: Partial<Profile>) => updateProfile(profile.id, patch)
-  const machine = machineCredentialsFor(profile)
-  const signInPublic = profile.clientAuthMethod === 'none'
-  const machineReady = !!machine.clientId && (machine.method === 'none' || !!machine.clientSecret)
-  const problem =
-    kind === 'signin'
-      ? tab === 'client_credentials' && signInPublic
-        ? "The sign-in client is public, and a public client can't use client credentials. Use the machine client."
-        : !signInPublic && !secrets.clientSecret
-          ? "The sign-in client's secret is empty. Enter it on the Sign in page, or use the machine client."
-          : undefined
-      : !machine.clientId
-        ? "Enter the machine client's ID."
-        : machine.method !== 'none' && !machine.clientSecret
-          ? "Enter the machine client's secret. It stays in memory for this tab."
-          : undefined
+/** Which of the configuration's clients these requests are sent as, with its fields to edit. */
+function ClientPicker({ profile, clientRef, onPick, tab }: { profile: Profile; clientRef: string; onPick: (ref: string) => void; tab: GrantTab }) {
+  const secrets = useAppState((s) => secretsFor(profile.id, s).clientSecrets)
+  const chosen = profile.clients.find((c) => c.id === clientRef) ?? profile.clients[0]
+  const ready = (c: ClientConfig) => !!c.clientId.trim() && (c.authMethod === 'none' || !!secrets[c.id])
+  const problem = !chosen.clientId.trim()
+    ? `Enter the client ID of ${chosen.name}.`
+    : tab === 'client_credentials' && chosen.authMethod === 'none'
+      ? `${chosen.name} is a public client, and a public client can't use client credentials. Pick or add a confidential client.`
+      : chosen.authMethod !== 'none' && !secrets[chosen.id]
+        ? `Enter the secret of ${chosen.name}. It stays in memory for this tab.`
+        : undefined
 
   return (
     <section aria-label="Client" className="card space-y-3 p-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h3 className="font-semibold">Client</h3>
-        <span className="text-[13px] text-zinc-500">
-          {tab === 'client_credentials' ? 'Client credentials needs a confidential client.' : 'The client these requests are sent as.'}
-        </span>
+        <span className="text-[13px] text-zinc-500">{tab === 'client_credentials' ? 'Client credentials needs a confidential client.' : 'The client these requests are sent as.'}</span>
       </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        <ClientCard
-          selected={kind === 'signin'}
-          onSelect={() => onKind('signin')}
-          title="Sign-in client"
-          badge={<Badge tone={signInPublic ? 'neutral' : 'green'}>{signInPublic ? 'public' : profile.clientAuthMethod}</Badge>}
-          detail={<span className="code">{profile.clientId || '(not set)'}</span>}
-          note={tab === 'client_credentials' && signInPublic ? "A public client can't use client credentials." : 'Set on the Sign in page.'}
-        />
-        <ClientCard
-          selected={kind === 'machine'}
-          onSelect={() => onKind('machine')}
-          title={machine.clientId ? 'Machine client' : 'Add a machine client'}
-          badge={machine.clientId ? <Badge tone={machineReady ? 'green' : 'amber'}>{machineReady ? (machine.method === 'none' ? 'public' : 'secret entered') : 'needs its secret'}</Badge> : undefined}
-          detail={machine.clientId ? <span className="code">{machine.clientId} · {machine.method}</span> : 'A confidential client for grants with no user.'}
-          note="Saved with this configuration. The secret stays in memory for this tab."
-        />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {profile.clients.map((c) => (
+          <ClientCard
+            key={c.id}
+            selected={c.id === chosen.id}
+            onSelect={() => onPick(c.id)}
+            title={c.name}
+            badge={
+              c.authMethod === 'none' ? <Badge>public</Badge> : <Badge tone={ready(c) ? 'green' : 'amber'}>{ready(c) ? 'secret entered' : 'needs its secret'}</Badge>
+            }
+            detail={
+              <span className="code">
+                {c.clientId || '(no client ID)'}
+                {c.authMethod !== 'none' ? ` · ${c.authMethod}` : ''}
+              </span>
+            }
+            note={c.id === profile.signInClient ? 'Used for sign-in' : undefined}
+          />
+        ))}
+        <button
+          type="button"
+          className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-zinc-300 p-3 text-sm text-zinc-600 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-white"
+          onClick={() => onPick(addClient(profile, { authMethod: 'client_secret_post' }))}
+        >
+          <Plus size={14} /> Add a client
+        </button>
       </div>
-      {kind === 'machine' && (
-        <div className="grid gap-3 border-t border-zinc-100 pt-3 md:grid-cols-[2fr_1.4fr_2fr] dark:border-zinc-800">
-          <Field label="Machine client ID">
-            <input className="input code" value={profile.machineClientId} spellCheck={false} placeholder="For example my-app-m2m" onChange={(e) => up({ machineClientId: e.target.value })} />
-          </Field>
-          <Field label="Authentication">
-            <select className="input" value={profile.machineAuthMethod} onChange={(e) => up({ machineAuthMethod: e.target.value as ClientAuthMethod })}>
-              <option value="client_secret_post">client_secret_post</option>
-              <option value="client_secret_basic">client_secret_basic</option>
-              <option value="none">none (public)</option>
-            </select>
-          </Field>
-          {profile.machineAuthMethod !== 'none' && (
-            <Field label="Client secret">
-              <SecretInput value={secrets.machineClientSecret} onChange={(v) => setSecrets(profile.id, { machineClientSecret: v })} />
-            </Field>
-          )}
-        </div>
-      )}
+      <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
+        <ClientEditor profile={profile} client={chosen} compact />
+      </div>
       {problem && <Alert tone="amber">{problem}</Alert>}
     </section>
   )
@@ -562,16 +542,20 @@ function TokenExchangeTab({ profile, creds, tokenEndpoint }: { profile: Profile;
 export function GrantsView() {
   const profile = useAppState((s) => activeProfile(s))
   const [tab, setTab] = useState<GrantTab>('client_credentials')
-  // Each grant remembers the client chosen for it. Client credentials starts on the machine client
+  // Each grant remembers the client chosen for it. Client credentials starts on a confidential client
   // when the sign-in client is public, since a public client cannot use it.
-  const [picked, setPicked] = useState<Partial<Record<GrantTab, ClientKind>>>({})
-  const kindFor = (t: GrantTab): ClientKind => picked[t] ?? (t === 'client_credentials' && profile.clientAuthMethod === 'none' ? 'machine' : 'signin')
-  const kind = kindFor(tab)
+  const [picked, setPicked] = useState<Partial<Record<GrantTab, string>>>({})
+  const confidential = profile.clients.find((c) => c.authMethod !== 'none')
+  const clientFor = (t: GrantTab): string => {
+    const p = picked[t]
+    if (p && profile.clients.some((c) => c.id === p)) return p
+    return t === 'client_credentials' && profile.clientAuthMethod === 'none' && confidential ? confidential.id : profile.signInClient
+  }
   const [endpoint, setEndpoint] = useState(profile.endpoints.token)
   // Follow the configuration when it changes (another profile, discovery).
   const known = [profile.endpoints.token, ...(profile.b2b.style === 'path' ? profile.b2b.organizations.map((o) => orgTokenEndpoint(profile, o)) : [])]
   const tokenEndpoint = known.includes(endpoint) ? endpoint : profile.endpoints.token
-  const credsFor = (t: GrantTab) => () => (kindFor(t) === 'machine' ? machineCredentialsFor(profile) : credentialsFor(profile))
+  const credsFor = (t: GrantTab) => () => clientCredentials(profile, clientFor(t))
   const props = { profile, tokenEndpoint }
 
   return (
@@ -589,7 +573,7 @@ export function GrantsView() {
         value={tab}
         onChange={setTab}
       />
-      <ClientPicker profile={profile} kind={kind} onKind={(k) => setPicked({ ...picked, [tab]: k })} tab={tab} />
+      <ClientPicker profile={profile} clientRef={clientFor(tab)} onPick={(ref) => setPicked({ ...picked, [tab]: ref })} tab={tab} />
       <TokenEndpointPicker profile={profile} value={tokenEndpoint} onChange={setEndpoint} />
       {/* Kept mounted so device polling and form input survive tab switches. */}
       <div hidden={tab !== 'client_credentials'}>

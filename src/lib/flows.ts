@@ -9,10 +9,18 @@ import { listenForResponses } from './handoff'
 import type { Jwks } from './oauth/jwt'
 import { toCurl } from './oauth/redact'
 import type { GrantKind, Organization, Profile, TokenResponse, TokenSet } from './oauth/types'
-import { addCode, addTokenSet, getState, removeCode, secretsFor, setState, updateProfile, updateSignIn, upsertSignIn } from './store/appStore'
+import { addCode, addTokenSet, clientSecretOf, getState, removeCode, setState, updateProfile, updateSignIn, upsertSignIn } from './store/appStore'
 
+/** One of the configuration's clients, by its ClientConfig id, with the secret typed for it. */
+export function clientCredentials(profile: Profile, clientRef: string): ClientCredentials {
+  const c = profile.clients.find((x) => x.id === clientRef)
+  if (!c) return credentialsFor(profile)
+  return { clientId: c.clientId.trim(), method: c.authMethod, clientSecret: clientSecretOf(profile.id, c.id) }
+}
+
+/** The sign-in client. */
 export function credentialsFor(profile: Profile): ClientCredentials {
-  return { clientId: profile.clientId, method: profile.clientAuthMethod, clientSecret: secretsFor(profile.id).clientSecret }
+  return { clientId: profile.clientId, method: profile.clientAuthMethod, clientSecret: clientSecretOf(profile.id, profile.signInClient) }
 }
 
 /** The configuration a token set came from. Operations never fall back to another configuration:
@@ -23,25 +31,20 @@ export function profileOf(set: TokenSet): Profile {
   return profile
 }
 
-/** The configuration's machine client: a confidential client for grants with no user. */
-export function machineCredentialsFor(profile: Profile): ClientCredentials {
-  return { clientId: profile.machineClientId.trim(), method: profile.machineAuthMethod, clientSecret: secretsFor(profile.id).machineClientSecret }
-}
-
-/** The client a token set was issued to: the sign-in client, the machine client, or another client. */
+/** The client a token set was issued to, found by client ID among the configuration's clients.
+ * Sets saved before token sets recorded their client belong to the sign-in client. */
 export function credentialsForSet(set: TokenSet, profile: Profile): ClientCredentials {
-  if (!set.client || set.client.clientId === profile.clientId) return credentialsFor(profile)
-  if (set.client.clientId === profile.machineClientId.trim()) return machineCredentialsFor(profile)
-  return { clientId: set.client.clientId, method: set.client.method, clientSecret: getState().otherClientSecrets[set.client.clientId] }
+  if (!set.client) return credentialsFor(profile)
+  const id = set.client.clientId
+  const match = profile.clients.find((c) => c.clientId.trim() === id && c.authMethod === set.client!.method) ?? profile.clients.find((c) => c.clientId.trim() === id)
+  if (match) return clientCredentials(profile, match.id)
+  return { clientId: id, method: set.client.method, clientSecret: '' }
 }
 
-export function introspectionCredentialsFor(profile: Profile): ClientCredentials {
-  if (!profile.introspectionClientId) return credentialsFor(profile)
-  return {
-    clientId: profile.introspectionClientId,
-    method: profile.introspectionAuthMethod,
-    clientSecret: secretsFor(profile.id).introspectionClientSecret,
-  }
+/** The client for introspection: the chosen one, else the token set's own client. */
+export function introspectionCredentialsFor(profile: Profile, set?: TokenSet): ClientCredentials {
+  if (profile.introspectionClient) return clientCredentials(profile, profile.introspectionClient)
+  return set ? credentialsForSet(set, profile) : credentialsFor(profile)
 }
 
 /** The issuer to save: the metadata's exact value (tokens carry it byte for byte, trailing slash
@@ -143,6 +146,7 @@ export function startSignIn(pending: PendingAuthorization): void {
     id: pending.state,
     label: pending.label ?? (pending.organization ? `Sign in to ${pending.organization.name}` : 'Sign-in'),
     profileId: pending.profile.id,
+    organization: pending.organization?.name,
     startedAt: Date.now(),
     status: 'waiting',
     viaPar: !!pending.par,
@@ -189,7 +193,7 @@ export function acceptResponse(callback: CallbackParams): CallbackOutcome {
   const fail = (message: string) => {
     const entry = { status: 'failed' as const, message, finishedAt: Date.now() }
     if (known) updateSignIn(id, entry)
-    else if (pending) upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, startedAt: pending.createdAt, ...entry })
+    else if (pending) upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, organization: pending.organization?.name, startedAt: pending.createdAt, ...entry })
   }
   if (callback.error) {
     fail(`${callback.error}${callback.errorDescription ? `: ${callback.errorDescription}` : ''}`)
@@ -202,7 +206,7 @@ export function acceptResponse(callback: CallbackParams): CallbackOutcome {
   const received: ReceivedCode = { id: pending.state, code: callback.code, receivedAt: Date.now(), pending }
   addCode(received)
   if (known) updateSignIn(id, { status: 'code', message: undefined, iss: !!callback.iss })
-  else upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, startedAt: pending.createdAt, status: 'code', viaPar: !!pending.par, iss: !!callback.iss })
+  else upsertSignIn({ id, label: pending.label ?? 'Sign-in', profileId: pending.profile.id, organization: pending.organization?.name, startedAt: pending.createdAt, status: 'code', viaPar: !!pending.par, iss: !!callback.iss })
   const profile = getState().profiles.find((p) => p.id === pending.profile.id) ?? pending.profile
   const redeeming = profile.redeemCodeAutomatically ? redeemCode(received) : undefined
   return { callback, pending, check, received, redeeming }
@@ -241,7 +245,7 @@ export function tokenRequestDraft(received: ReceivedCode): TokenRequestDraft {
   const headers: Record<string, string> = {}
   // The client the request was made for (the snapshot); its secret lives in memory only. A missing
   // secret is left empty for the user to fill in rather than failing here.
-  const creds = { ...credentialsFor(pending.profile), clientSecret: secretsFor(pending.profile.id).clientSecret }
+  const creds = credentialsFor(pending.profile)
   try {
     applyClientAuth(creds, fields, headers)
   } catch {
@@ -305,6 +309,7 @@ export async function redeemCode(received: ReceivedCode, draft: TokenRequestDraf
     organization: pending.organization,
     tokenEndpoint: draft.url,
     maxAge: pending.profile.maxAge.trim() ? Number(pending.profile.maxAge) : undefined,
+    client: { clientId: pending.profile.clientId, method: pending.profile.clientAuthMethod },
   })
   addTokenSet(tokenSet)
   updateSignIn(received.id, { status: 'redeemed', tokenSetId: tokenSet.id, message: undefined, finishedAt: Date.now() })
@@ -381,11 +386,8 @@ export async function switchByTokenExchange(set: TokenSet, org: Organization, sc
 
 /** Stores a token set from a grant that has no authorization response (client credentials, device, exchange). */
 export function storeGrantTokens(profile: Profile, grant: GrantKind, label: string, response: TokenResponse, tokenEndpoint: string, creds: ClientCredentials, parentId?: string): TokenSet {
-  const other = creds.clientId !== profile.clientId
-  // Remember another client's secret for this page, so the set can be refreshed or revoked with it.
-  if (other && creds.clientSecret) setState((s) => ({ otherClientSecrets: { ...s.otherClientSecrets, [creds.clientId]: creds.clientSecret! } }))
-  const client = other ? { clientId: creds.clientId, method: creds.method } : undefined
-  const set = newTokenSet({ label, grant, profileId: profile.id, response, tokenEndpoint, parentId, client })
+  // The set remembers its client, so refresh, introspection and revocation use the same one.
+  const set = newTokenSet({ label, grant, profileId: profile.id, response, tokenEndpoint, parentId, client: { clientId: creds.clientId, method: creds.method } })
   addTokenSet(set)
   return set
 }

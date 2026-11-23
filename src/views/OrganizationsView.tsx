@@ -226,24 +226,35 @@ export function OrganizationsView() {
           </div>
 
           <div className="card space-y-2 p-4 text-sm">
-            <h3 className="font-semibold">Current context</h3>
+            <h3 className="font-semibold">Token set to work with</h3>
+            <p className="text-xs text-zinc-500">Its access token loads your organizations, and its {subjectField} switches organization.</p>
             {baseSet ? (
               <>
-                <div>
-                  Token set: <span className="font-medium">{baseSet.label}</span>
-                </div>
+                <select
+                  aria-label="Token set"
+                  className="input"
+                  value={baseSet.id}
+                  onChange={(e) => setState({ selectedTokenSetId: e.target.value })}
+                >
+                  {sets.map((t) => {
+                    const o = organizationOf(t, profile.b2b.orgClaims)
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {t.label}
+                        {o ? ` · ${o.name}` : ''} · {new Date(t.obtainedAt).toLocaleTimeString()}
+                      </option>
+                    )
+                  })}
+                </select>
                 <div>
                   Organization: {current ? <Badge tone="violet">{current.name}</Badge> : <span className="text-zinc-500">none in the token (no {profile.b2b.orgClaims.id || 'organization'} claim)</span>}
                 </div>
                 <div>
                   Switch subject (<span className="code">{subjectField}</span>): {hasSubject ? <Badge tone="blue">available</Badge> : <span className="text-zinc-500">not in this token set</span>}
                 </div>
-                <button type="button" className="btn-ghost px-0 text-xs text-indigo-600" onClick={() => setState({ view: 'tokens' })}>
-                  Choose another token set in Tokens
-                </button>
               </>
             ) : (
-              <p className="text-zinc-500">No token set yet. Sign in to an organization to get one.</p>
+              <p className="text-zinc-500">No token set yet. Sign in, or sign in to an organization, to get one.</p>
             )}
           </div>
         </div>

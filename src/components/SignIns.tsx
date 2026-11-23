@@ -120,9 +120,10 @@ function SignInSteps({ entry }: { entry: SignIn }) {
   )
 }
 
-/** The latest sign-in in full, with earlier ones a click away. */
-export function SignInResult() {
-  const signIns = useAppState((s) => s.signIns)
+/** The latest sign-in in full, with earlier ones a click away. With `organizationsOnly`, only
+ * sign-ins to an organization (the ones the Organizations page starts). */
+export function SignInResult({ organizationsOnly = false }: { organizationsOnly?: boolean }) {
+  const signIns = useAppState((s) => (organizationsOnly ? s.signIns.filter((x) => x.organization) : s.signIns))
   const [pickedId, setPickedId] = useState<string>()
   const [showEarlier, setShowEarlier] = useState(false)
   if (signIns.length === 0) return null
@@ -133,7 +134,7 @@ export function SignInResult() {
     <section aria-label="Sign-in result" className="card px-4 py-3 sm:px-5">
       <div className="flex flex-wrap items-center gap-2 pb-1">
         <span className={cx('h-2 w-2 rounded-full', DOT[shown.status])} aria-hidden="true" />
-        <h2 className="font-semibold">{shown.id === signIns[0].id ? 'Latest sign-in' : 'Sign-in'}</h2>
+        <h2 className="font-semibold">{shown.id === signIns[0].id ? (organizationsOnly ? 'Latest organization sign-in' : 'Latest sign-in') : 'Sign-in'}</h2>
         <span className="text-xs text-zinc-500">
           {new Date(shown.startedAt).toLocaleTimeString()} · {shown.label}
           {shown.viaPar ? ' · PAR' : ''}

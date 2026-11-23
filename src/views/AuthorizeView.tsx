@@ -9,7 +9,8 @@ import { PRESETS, presetById, serverPatch } from '../lib/oauth/presets'
 import { carryDraft, jsonToParams, paramsToJson, withParams, type AuthorizationRequest, type ParResult, type PendingAuthorization } from '../lib/oauth/authorize'
 import type { Organization, Profile } from '../lib/oauth/types'
 import { displayUrl, isHttpUrl } from '../lib/oauth/url'
-import { activeProfile, secretsFor, setSecrets, updateProfile, useAppState } from '../lib/store/appStore'
+import { ClientPicker } from '../components/Clients'
+import { activeProfile, clientSecretOf, setClientSecret, updateProfile, useAppState } from '../lib/store/appStore'
 import { MoreSettings, ScopeChips } from './ConfigPanel'
 
 /** Seconds until a pushed request expires, ticking once a second from the moment of the push. */
@@ -301,9 +302,15 @@ function Check({ on, onChange, children, title }: { on: boolean; onChange: (v: b
 /** The sign-in page: one form, one button, and the result below. */
 export function AuthorizeView() {
   const profile = useAppState((s) => activeProfile(s))
-  const secret = useAppState((s) => secretsFor(profile.id, s).clientSecret)
+  const secret = useAppState((s) => clientSecretOf(profile.id, profile.signInClient, s))
   const [orgId, setOrgId] = useState('')
   const [more, setMore] = useState(false)
+  // Bumped by Manage clients: remounts More settings with the Clients card open.
+  const [manage, setManage] = useState(0)
+  const manageClients = () => {
+    setMore(true)
+    setManage((n) => n + 1)
+  }
   const [json, setJson] = useState(false)
   const org = profile.b2b.organizations.find((o) => o.id === orgId)
   const problems = profileProblems(profile)
@@ -365,10 +372,7 @@ export function AuthorizeView() {
               )}
             </div>
           </div>
-          <label className="block">
-            <span className="label">Client ID</span>
-            <input className="input code" value={profile.clientId} spellCheck={false} placeholder="The client registered for this playground" onChange={(e) => up({ clientId: e.target.value })} />
-          </label>
+          <ClientPicker profile={profile} onManage={manageClients} />
           <div>
             <label htmlFor="f-scope" className="label">
               Scope
@@ -388,7 +392,7 @@ export function AuthorizeView() {
           {needsSecret && (
             <label className="block md:col-span-2">
               <span className="label">Client secret ({profile.clientAuthMethod}; kept in memory for this tab only)</span>
-              <SecretInput value={secret} onChange={(v) => setSecrets(profile.id, { clientSecret: v })} />
+              <SecretInput value={secret} onChange={(v) => setClientSecret(profile.id, profile.signInClient, v)} />
             </label>
           )}
         </div>
@@ -426,8 +430,8 @@ export function AuthorizeView() {
         </div>
 
         {more && (
-          <div className="-mx-4 border-y border-zinc-100 sm:-mx-5 dark:border-zinc-800">
-            <MoreSettings />
+          <div className="rounded-xl bg-zinc-100/80 p-3 dark:bg-zinc-950/70">
+            <MoreSettings key={manage} openClients={manage > 0} />
           </div>
         )}
 

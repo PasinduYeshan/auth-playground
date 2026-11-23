@@ -2,7 +2,7 @@
 // no secret fields, and sanitizeProfile drops anything unexpected (for example from an import).
 import { sanitizeB2B } from '../oauth/b2b'
 import { presetById } from '../oauth/presets'
-import { newProfile, type Profile } from '../oauth/types'
+import { DEFAULT_CLIENT, newProfile, withSignInClient, type ClientAuthMethod, type ClientConfig, type Profile } from '../oauth/types'
 
 const KEY = 'ap:profiles:v1'
 const ACTIVE_KEY = 'ap:active-profile'
@@ -35,7 +35,8 @@ export function sanitizeProfile(input: unknown): Profile {
   out.preset = presetById(typeof src.preset === 'string' ? src.preset : undefined).id
   out.b2b = sanitizeB2B(src.b2b, presetById(out.preset as string).b2b())
   out.resources = Array.isArray(src.resources) ? (src.resources as unknown[]).map(String) : []
-  return out as unknown as Profile
+  Object.assign(out, sanitizeClients(src, out as unknown as Profile))
+  return withSignInClient(out as unknown as Profile)
 }
 
 export function loadProfiles(): Profile[] {
@@ -122,4 +123,37 @@ export function parseConfigFile(text: string, existingNames: string[] = []): Pro
     names.add(name)
     return { ...p, name }
   })
+}
+
+const AUTH_METHODS: ClientAuthMethod[] = ['none', 'client_secret_post', 'client_secret_basic']
+const authMethod = (v: unknown, fallback: ClientAuthMethod): ClientAuthMethod => (AUTH_METHODS.includes(v as ClientAuthMethod) ? (v as ClientAuthMethod) : fallback)
+
+/** The client list from a saved or imported profile. A profile saved before named clients had a
+ * sign-in client and optional machine and introspection clients: those become named clients. */
+function sanitizeClients(src: Record<string, unknown>, base: Profile): Pick<Profile, 'clients' | 'signInClient' | 'introspectionClient' | 'clientAuthMethod'> {
+  const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  if (Array.isArray(src.clients) && src.clients.length) {
+    const seen = new Set<string>()
+    const clients: ClientConfig[] = []
+    for (const raw of src.clients as Record<string, unknown>[]) {
+      const id = str(raw?.id).slice(0, 64)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      clients.push({ id, name: str(raw.name).slice(0, 80) || 'Client', clientId: str(raw.clientId), authMethod: authMethod(raw.authMethod, 'none') })
+    }
+    if (clients.length) return { clients, signInClient: str(src.signInClient), introspectionClient: str(src.introspectionClient), clientAuthMethod: base.clientAuthMethod }
+  }
+  const method = authMethod(src.clientAuthMethod, 'none')
+  const clients: ClientConfig[] = [{ id: DEFAULT_CLIENT, name: 'Default', clientId: base.clientId, authMethod: method }]
+  const add = (id: string, name: string, clientId: string, m: ClientAuthMethod): string => {
+    const same = clients.find((c) => c.clientId === clientId)
+    if (same) return same.id
+    clients.push({ id, name, clientId, authMethod: m })
+    return id
+  }
+  const machine = str(src.machineClientId).trim()
+  if (machine) add('machine', 'Machine', machine, authMethod(src.machineAuthMethod, 'client_secret_post'))
+  const intro = str(src.introspectionClientId).trim()
+  const introspectionClient = intro ? add('introspection', 'Introspection', intro, authMethod(src.introspectionAuthMethod, 'client_secret_basic')) : ''
+  return { clients, signInClient: DEFAULT_CLIENT, introspectionClient, clientAuthMethod: method }
 }
